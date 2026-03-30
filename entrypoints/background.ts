@@ -1,27 +1,61 @@
+import { checkServerHealth, downloadAndCut, DEFAULT_SERVER_URL } from '@/lib/server-client';
+
 // 消息类型定义
 interface DownloadMessage {
   type: 'DOWNLOAD_AUDIO';
   url: string;
 }
 
+interface CheckServerMessage {
+  type: 'CHECK_SERVER';
+  url?: string;
+}
+
+interface ServerCutMessage {
+  type: 'SERVER_DOWNLOAD_AND_CUT';
+  bvid: string;
+  startTime: number;
+  endTime: number;
+  serverUrl?: string;
+}
+
+type Message = DownloadMessage | CheckServerMessage | ServerCutMessage;
+
 interface DownloadResponse {
   error?: string;
   data?: ArrayBuffer;
+  ok?: boolean;
 }
 
 export default defineBackground(() => {
   console.log('[B站音乐截取] 后台服务已启动', { id: browser.runtime.id });
 
-  // 监听来自content script的消息
   browser.runtime.onMessage.addListener(
-    (message: DownloadMessage, sender, sendResponse) => {
+    (message: Message, _sender, sendResponse) => {
       if (message.type === 'DOWNLOAD_AUDIO') {
         handleDownloadAudio(message.url)
           .then(sendResponse)
           .catch((error) => {
             sendResponse({ error: error.message });
           });
-        return true; // 保持消息通道开启以进行异步响应
+        return true;
+      }
+
+      if (message.type === 'CHECK_SERVER') {
+        checkServerHealth(message.url || DEFAULT_SERVER_URL)
+          .then(result => sendResponse({ ok: result.ok, data: result.data }))
+          .catch(() => sendResponse({ ok: false }));
+        return true;
+      }
+
+      if (message.type === 'SERVER_DOWNLOAD_AND_CUT') {
+        downloadAndCut(
+          { bvid: message.bvid, startTime: message.startTime, endTime: message.endTime },
+          message.serverUrl || DEFAULT_SERVER_URL
+        )
+          .then(data => sendResponse({ data }))
+          .catch(err => sendResponse({ error: err.message }));
+        return true;
       }
     }
   );

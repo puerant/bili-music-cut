@@ -1,0 +1,10 @@
+{
+  "name": "bili-music-cut-server",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "B站音乐截取 - 本地伴侣服务器",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  }
+}

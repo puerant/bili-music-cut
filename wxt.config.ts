@@ -17,6 +17,7 @@ export default defineConfig({
       '*://*.bilibili.com/*',
       '*://*.bilivideo.com/*',
       '*://*.hdslb.com/*',
+      'http://localhost:9721/*',
     ],
   },
 });
