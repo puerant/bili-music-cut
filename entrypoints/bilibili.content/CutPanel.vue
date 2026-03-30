@@ -1,10 +1,8 @@
 <script lang="ts" setup>
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import type { BilibiliVideoInfo } from '@/lib/bilibili';
 import { formatTime } from '@/lib/bilibili';
-import { trackDb, albumDb, generateId } from '@/lib/db';
-import { cutAudio, captureAudioFromVideo } from '@/lib/audio-cutter';
-import { getAudioStreamUrl } from '@/lib/bilibili';
+import { trackDb, albumDb } from '@/lib/db';
 
 // Props
 const props = defineProps<{
@@ -23,14 +21,11 @@ const selectedAlbumId = ref<string>('');
 const albums = ref<Array<{ id: string; name: string }>>([]);
 const saveSuccess = ref(false);
 const errorMessage = ref('');
+const serverStatus = ref<'unknown' | 'online' | 'offline'>('unknown');
 
 // 计算属性
 const videoPlayer = computed(() => {
   return document.querySelector('video') as HTMLVideoElement | null;
-});
-
-const currentTime = computed(() => {
-  return videoPlayer.value?.currentTime || 0;
 });
 
 const videoDuration = computed(() => {
@@ -41,12 +36,17 @@ const selectedDuration = computed(() => {
   return Math.max(0, endTime.value - startTime.value);
 });
 
+// 格式化显示时间
+const formattedStartTime = computed(() => formatTime(startTime.value));
+const formattedEndTime = computed(() => formatTime(endTime.value));
+const formattedDuration = computed(() => formatTime(selectedDuration.value));
+
 // 方法
 function togglePanel() {
   isPanelOpen.value = !isPanelOpen.value;
   if (isPanelOpen.value) {
     loadAlbums();
-    // 设置默认时间范围
+    checkServer();
     if (endTime.value === 0 && videoDuration.value > 0) {
       endTime.value = Math.min(60, videoDuration.value);
     }
@@ -56,6 +56,15 @@ function togglePanel() {
 async function loadAlbums() {
   const allAlbums = await albumDb.getAll();
   albums.value = allAlbums.map(a => ({ id: a.id, name: a.name }));
+}
+
+async function checkServer() {
+  try {
+    const response = await browser.runtime.sendMessage({ type: 'CHECK_SERVER' });
+    serverStatus.value = response?.ok ? 'online' : 'offline';
+  } catch {
+    serverStatus.value = 'offline';
+  }
 }
 
 function setStartTime() {
@@ -99,45 +108,42 @@ async function saveTrack() {
     return;
   }
 
-  const video = videoPlayer.value;
-  if (!video) {
-    errorMessage.value = '未找到视频播放器';
-    return;
-  }
-
   isLoading.value = true;
-  loadingMessage.value = '正在准备录制...';
-  loadingProgress.value = 0;
+  loadingMessage.value = '正在检查本地服务...';
+  loadingProgress.value = 5;
   errorMessage.value = '';
 
-  // 保存当前播放状态
-  const originalTime = video.currentTime;
-  const originalPaused = video.paused;
-
   try {
-    // 使用 MediaRecorder 直接从视频捕获音频
-    loadingMessage.value = '正在录制音频...';
+    // Step 1: 检查服务器状态
+    const healthCheck = await browser.runtime.sendMessage({ type: 'CHECK_SERVER' });
 
-    const audioBlob = await captureAudioFromVideo(
-      video,
-      startTime.value,
-      endTime.value,
-      (p) => {
-        loadingProgress.value = p;
-        if (p < 30) {
-          loadingMessage.value = '正在准备录制...';
-        } else if (p < 60) {
-          loadingMessage.value = '正在录制音频...';
-        } else {
-          loadingMessage.value = '正在编码音频...';
-        }
-      }
-    );
+    if (!healthCheck?.ok) {
+      errorMessage.value = '本地服务未启动。请打开终端运行: cd server && node index.js';
+      return;
+    }
 
-    loadingProgress.value = 95;
+    // Step 2: 请求服务器下载并截取音频
+    loadingMessage.value = '正在通过本地服务下载并截取音频...';
+    loadingProgress.value = 15;
+
+    const response = await browser.runtime.sendMessage({
+      type: 'SERVER_DOWNLOAD_AND_CUT',
+      bvid: props.videoInfo.bvid,
+      startTime: startTime.value,
+      endTime: endTime.value,
+    });
+
+    if (response.error) {
+      errorMessage.value = `下载失败: ${response.error}`;
+      return;
+    }
+
+    loadingProgress.value = 90;
     loadingMessage.value = '正在保存...';
 
-    // 保存到数据库
+    // Step 3: 将 MP3 数据保存到 IndexedDB
+    const audioBlob = new Blob([response.data], { type: 'audio/mpeg' });
+
     await trackDb.create(
       {
         name: trackName.value.trim(),
@@ -166,20 +172,10 @@ async function saveTrack() {
     console.error('保存失败:', error);
     errorMessage.value = error.message || '保存失败';
   } finally {
-    // 恢复视频状态
-    video.currentTime = originalTime;
-    if (originalPaused) {
-      video.pause();
-    }
     isLoading.value = false;
     loadingMessage.value = '';
   }
 }
-
-// 格式化显示时间
-const formattedStartTime = computed(() => formatTime(startTime.value));
-const formattedEndTime = computed(() => formatTime(endTime.value));
-const formattedDuration = computed(() => formatTime(selectedDuration.value));
 </script>
 
 <template>
@@ -199,6 +195,14 @@ const formattedDuration = computed(() => formatTime(selectedDuration.value));
     </div>
 
     <div class="bmc-content">
+      <!-- 服务器状态 -->
+      <div class="bmc-server-status" :class="serverStatus">
+        <span class="bmc-status-dot"></span>
+        <span v-if="serverStatus === 'online'">本地服务已连接</span>
+        <span v-else-if="serverStatus === 'offline'">本地服务未连接</span>
+        <span v-else>正在检查服务状态...</span>
+      </div>
+
       <!-- 视频信息 -->
       <div v-if="videoInfo" class="bmc-video-info">
         <img :src="videoInfo.cover" alt="封面" class="bmc-cover" />
@@ -268,7 +272,7 @@ const formattedDuration = computed(() => formatTime(selectedDuration.value));
       <button
         class="bmc-save"
         @click="saveTrack"
-        :disabled="isLoading || !trackName.trim()"
+        :disabled="isLoading || !trackName.trim() || serverStatus === 'offline'"
       >
         保存音轨
       </button>
@@ -362,6 +366,51 @@ const formattedDuration = computed(() => formatTime(selectedDuration.value));
 
 .bmc-content {
   padding: 16px;
+}
+
+/* 服务器状态 */
+.bmc-server-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.bmc-server-status.online {
+  background: #f6ffed;
+  color: #52c41a;
+}
+
+.bmc-server-status.offline {
+  background: #fff2f2;
+  color: #ff4d4f;
+}
+
+.bmc-server-status.unknown {
+  background: #f5f5f5;
+  color: #999;
+}
+
+.bmc-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.bmc-server-status.online .bmc-status-dot {
+  background: #52c41a;
+}
+
+.bmc-server-status.offline .bmc-status-dot {
+  background: #ff4d4f;
+}
+
+.bmc-server-status.unknown .bmc-status-dot {
+  background: #d9d9d9;
 }
 
 .bmc-video-info {

@@ -78,7 +78,33 @@ export async function getVideoInfo(bvid: string): Promise<BilibiliVideoInfo | nu
   }
 }
 
-// 获取音频流地址
+// 获取视频分P列表（获取cid）
+export async function getCid(bvid: string): Promise<number | null> {
+  try {
+    const response = await fetch(
+      `https://api.bilibili.com/x/player/pagelist?bvid=${bvid}&jsonp=jsonp`,
+      {
+        credentials: 'include',
+        headers: {
+          Referer: 'https://www.bilibili.com',
+        },
+      }
+    );
+    const json = await response.json();
+
+    if (json.code !== 0 || !json.data || json.data.length === 0) {
+      console.error('获取cid失败:', json.message);
+      return null;
+    }
+
+    return json.data[0].cid;
+  } catch (error) {
+    console.error('获取cid失败:', error);
+    return null;
+  }
+}
+
+// 获取音频流地址（需提供cid）
 export async function getAudioStreamUrl(
   bvid: string,
   cid: number
@@ -121,6 +147,22 @@ export async function getAudioStreamUrl(
     console.error('获取音频流失败:', error);
     return null;
   }
+}
+
+// 仅通过BV号获取音频流地址（自动获取cid）
+export async function getAudioStreamUrlByBvid(
+  bvid: string
+): Promise<AudioStreamInfo | null> {
+  // 优先从视频信息接口拿cid（信息更全）
+  const videoInfo = await getVideoInfo(bvid);
+  const cid = videoInfo?.cid ?? (await getCid(bvid));
+
+  if (!cid) {
+    console.error('无法获取cid，请检查BV号');
+    return null;
+  }
+
+  return getAudioStreamUrl(bvid, cid);
 }
 
 // 下载音频流 (需要通过background代理请求以绑过CORS)
