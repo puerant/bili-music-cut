@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { ref, computed, onMounted, h, inject, type Ref } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount, watch, h, inject, type Ref } from 'vue';
 import {
   NButton,
   NEmpty,
@@ -31,7 +31,7 @@ import {
   BulbOutlined,
 } from '@vicons/antd';
 import { useMusicStore } from '@/stores/index';
-import { formatTime, getVideoInfo } from '@/lib/bilibili';
+import { formatTime, getVideoInfo, fetchPlayUrl } from '@/lib/bilibili';
 import type { Playlist, Track } from '@/lib/storage';
 import type { BilibiliVideoInfo } from '@/lib/bilibili';
 
@@ -74,6 +74,11 @@ const activePlaylistId = ref<string | null>(null);
 const showCreatePlaylist = ref(false);
 const showCutModal = ref(false);
 const showEditPlaylist = ref(false);
+
+// ========== 预听 ==========
+const previewAudio = ref<HTMLAudioElement | null>(null);
+const previewLoading = ref(false);
+const previewPlaying = ref(false);
 const editingPlaylist = ref<Playlist | null>(null);
 const newPlaylistName = ref('');
 const editPlaylistName = ref('');
@@ -251,6 +256,90 @@ function onAudioEnded() {
   isPlaying.value = false;
   currentTime.value = 0;
 }
+
+// ========== 预听截取片段 ==========
+function stopPreview() {
+  if (previewAudio.value) {
+    previewAudio.value.pause();
+    previewAudio.value.src = '';
+    previewAudio.value = null;
+  }
+  previewPlaying.value = false;
+  previewLoading.value = false;
+}
+
+async function previewSegment() {
+  if (previewPlaying.value || previewLoading.value) {
+    stopPreview();
+    return;
+  }
+  if (!searchResult.value) return;
+  if (downloadEndTime.value <= downloadStartTime.value) {
+    message.warning('结束时间需大于起始时间');
+    return;
+  }
+
+  previewLoading.value = true;
+  try {
+    const bvid = searchResult.value.bvid;
+    let cid = searchResult.value.cid;
+    if (!cid) {
+      const info = await getVideoInfo(bvid);
+      if (info) cid = info.cid;
+    }
+    if (!cid) {
+      message.error('无法获取视频信息');
+      return;
+    }
+
+    const streamUrl = await fetchPlayUrl(bvid, cid);
+    if (!streamUrl) {
+      message.error('无法获取音频流');
+      return;
+    }
+
+    const audio = new Audio(streamUrl);
+    const startTime = downloadStartTime.value;
+    const endTime = downloadEndTime.value;
+
+    audio.addEventListener('loadedmetadata', () => {
+      audio.currentTime = startTime;
+      audio.play();
+      previewPlaying.value = true;
+      previewLoading.value = false;
+    });
+
+    audio.addEventListener('timeupdate', () => {
+      if (audio.currentTime >= endTime) {
+        audio.pause();
+        previewPlaying.value = false;
+      }
+    });
+
+    audio.addEventListener('ended', () => {
+      previewPlaying.value = false;
+    });
+
+    audio.addEventListener('error', () => {
+      message.error('音频加载失败');
+      stopPreview();
+    });
+
+    previewAudio.value = audio;
+  } catch (err: any) {
+    message.error(err.message || '预听失败');
+    previewLoading.value = false;
+  }
+}
+
+// 弹窗关闭时自动停止预听
+watch(showCutModal, (val) => {
+  if (!val) stopPreview();
+});
+
+onBeforeUnmount(() => {
+  stopPreview();
+});
 
 // ========== BV搜索 ==========
 async function doSearch(bvid: string) {
@@ -658,6 +747,23 @@ function selectPlaylist(playlist: Playlist) {
           →
           <span style="color: #63e2b7;">{{ formatTime(downloadEndTime) }}</span>
           （共 <span style="color: #63e2b7;">{{ formatTime(Math.max(0, downloadEndTime - downloadStartTime)) }}</span>）
+        </div>
+
+        <div style="text-align: center; margin-bottom: 16px;">
+          <n-button
+            size="small"
+            :type="previewPlaying ? 'warning' : 'default'"
+            :loading="previewLoading"
+            @click="previewSegment"
+          >
+            <template #icon>
+              <n-icon size="16">
+                <PauseCircleOutlined v-if="previewPlaying" />
+                <PlayCircleOutlined v-else />
+              </n-icon>
+            </template>
+            {{ previewPlaying ? '停止预听' : '预听片段' }}
+          </n-button>
         </div>
 
         <n-select

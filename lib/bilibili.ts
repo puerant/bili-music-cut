@@ -237,16 +237,28 @@ export async function fetchAudioForCutting(
   return downloadAudioStream(streamInfo.baseUrl, onProgress);
 }
 
+// 音频流URL缓存：key = `${bvid}_${cid}`
+const streamUrlCache = new Map<string, string>();
+
 /**
  * 延迟获取音频流播放 URL（azusa-player 模式）
- * 播放时才调用 API 获取 CDN 地址
+ * 播放时才调用 API 获取 CDN 地址，内存缓存避免重复请求
  */
 export async function fetchPlayUrl(bvid: string, cid: number): Promise<string | null> {
   if (!cid) {
     cid = (await getCid(bvid)) ?? 0;
   }
   if (!cid) return null;
-  return getAudioStreamDirectUrl(bvid, cid);
+
+  const cacheKey = `${bvid}_${cid}`;
+  const cached = streamUrlCache.get(cacheKey);
+  if (cached) return cached;
+
+  const url = await getAudioStreamDirectUrl(bvid, cid);
+  if (url) {
+    streamUrlCache.set(cacheKey, url);
+  }
+  return url;
 }
 
 // 格式化时间 (秒 -> mm:ss)

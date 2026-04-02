@@ -211,8 +211,19 @@ export const useMusicStore = defineStore('music', () => {
     return playlist?.tracks ?? [];
   }
 
+  // 后台静默预缓存所有音轨的流URL
+  function prefetchStreamUrls() {
+    const tracks = playlists.value.flatMap((p) => p.tracks);
+    for (const track of tracks) {
+      let cid = track.cid;
+      if (!cid) continue;
+      fetchPlayUrl(track.bvid, cid).catch(() => {});
+    }
+  }
+
   async function init() {
     await loadPlaylists();
+    prefetchStreamUrls();
   }
 
   return {

@@ -1,5 +1,3 @@
-import { storage } from 'wxt/utils/storage';
-
 // ==================== 数据模型 ====================
 
 export interface Track {
@@ -31,15 +29,10 @@ export interface LastPlayed {
   position: number;
 }
 
-// ==================== Storage Items ====================
+// ==================== localStorage 封装 ====================
 
-const playlistsItem = storage.defineItem<Playlist[]>('local:playlists', {
-  fallback: [],
-});
-
-const lastPlayedItem = storage.defineItem<LastPlayed | null>('local:lastPlayed', {
-  fallback: null,
-});
+const STORAGE_KEY_PLAYLISTS = 'bili-music-cut:playlists';
+const STORAGE_KEY_LAST_PLAYED = 'bili-music-cut:lastPlayed';
 
 // ==================== 工具函数 ====================
 
@@ -50,7 +43,8 @@ export function generateId(): string {
 // ==================== Playlist CRUD ====================
 
 export async function getPlaylists(): Promise<Playlist[]> {
-  return playlistsItem.getValue();
+  const raw = localStorage.getItem(STORAGE_KEY_PLAYLISTS);
+  return raw ? JSON.parse(raw) : [];
 }
 
 export async function getPlaylist(id: string): Promise<Playlist | undefined> {
@@ -66,7 +60,7 @@ export async function savePlaylist(playlist: Playlist): Promise<void> {
   } else {
     playlists.unshift(playlist);
   }
-  await playlistsItem.setValue(playlists);
+  localStorage.setItem(STORAGE_KEY_PLAYLISTS, JSON.stringify(playlists));
 }
 
 export async function createPlaylist(title: string, cover?: string): Promise<Playlist> {
@@ -85,7 +79,7 @@ export async function createPlaylist(title: string, cover?: string): Promise<Pla
 
 export async function deletePlaylist(id: string): Promise<void> {
   const playlists = await getPlaylists();
-  await playlistsItem.setValue(playlists.filter((p) => p.id !== id));
+  localStorage.setItem(STORAGE_KEY_PLAYLISTS, JSON.stringify(playlists.filter((p) => p.id !== id)));
 }
 
 export async function addTrackToPlaylist(playlistId: string, track: Track): Promise<void> {
@@ -94,7 +88,7 @@ export async function addTrackToPlaylist(playlistId: string, track: Track): Prom
   if (!playlist) throw new Error('播放列表不存在');
   playlist.tracks.push(track);
   playlist.updatedAt = Date.now();
-  await playlistsItem.setValue(playlists);
+  localStorage.setItem(STORAGE_KEY_PLAYLISTS, JSON.stringify(playlists));
 }
 
 export async function removeTrackFromPlaylist(playlistId: string, trackId: string): Promise<void> {
@@ -103,7 +97,7 @@ export async function removeTrackFromPlaylist(playlistId: string, trackId: strin
   if (!playlist) return;
   playlist.tracks = playlist.tracks.filter((t) => t.id !== trackId);
   playlist.updatedAt = Date.now();
-  await playlistsItem.setValue(playlists);
+  localStorage.setItem(STORAGE_KEY_PLAYLISTS, JSON.stringify(playlists));
 }
 
 export async function updateTrackInPlaylist(
@@ -118,19 +112,20 @@ export async function updateTrackInPlaylist(
   if (!track) return;
   Object.assign(track, data);
   playlist.updatedAt = Date.now();
-  await playlistsItem.setValue(playlists);
+  localStorage.setItem(STORAGE_KEY_PLAYLISTS, JSON.stringify(playlists));
 }
 
 // ==================== LastPlayed ====================
 
 export async function getLastPlayed(): Promise<LastPlayed | null> {
-  return lastPlayedItem.getValue();
+  const raw = localStorage.getItem(STORAGE_KEY_LAST_PLAYED);
+  return raw ? JSON.parse(raw) : null;
 }
 
 export async function saveLastPlayed(data: LastPlayed): Promise<void> {
-  await lastPlayedItem.setValue(data);
+  localStorage.setItem(STORAGE_KEY_LAST_PLAYED, JSON.stringify(data));
 }
 
 export async function clearLastPlayed(): Promise<void> {
-  await lastPlayedItem.setValue(null);
+  localStorage.removeItem(STORAGE_KEY_LAST_PLAYED);
 }
