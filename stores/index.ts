@@ -13,10 +13,8 @@ import {
   type Track,
 } from '@/lib/storage';
 import { fetchPlayUrl, getVideoInfo } from '@/lib/bilibili';
-import { cutAudioFromStream, downloadAudio } from '@/lib/audio-cutter';
 
 export const useMusicStore = defineStore('music', () => {
-  // 状态
   const playlists = ref<Playlist[]>([]);
   const currentTrack = ref<Track | null>(null);
   const currentPlaylist = ref<Playlist | null>(null);
@@ -24,7 +22,6 @@ export const useMusicStore = defineStore('music', () => {
   const audioUrl = ref<string | null>(null);
   const isStreamLoading = ref(false);
 
-  // 计算属性：所有 tracks 扁平化
   const allTracks = computed(() => {
     return playlists.value.flatMap((p) =>
       p.tracks.map((t) => ({ ...t, playlistId: p.id, playlistTitle: p.title }))
@@ -33,7 +30,6 @@ export const useMusicStore = defineStore('music', () => {
 
   const hasPlaylists = computed(() => playlists.value.length > 0);
 
-  // 加载所有 playlists
   async function loadPlaylists() {
     isLoading.value = true;
     try {
@@ -43,14 +39,12 @@ export const useMusicStore = defineStore('music', () => {
     }
   }
 
-  // 创建播放列表
   async function createPlaylist(title: string, cover?: string) {
     const playlist = await createPlaylistInStorage(title, cover);
     playlists.value.unshift(playlist);
     return playlist;
   }
 
-  // 更新播放列表信息
   async function updatePlaylist(
     id: string,
     data: Partial<Pick<Playlist, 'title' | 'cover'>>
@@ -61,13 +55,11 @@ export const useMusicStore = defineStore('music', () => {
     await savePlaylist(playlist);
   }
 
-  // 删除播放列表
   async function deletePlaylist(id: string) {
     await deletePlaylistFromStorage(id);
     playlists.value = playlists.value.filter((p) => p.id !== id);
   }
 
-  // 添加音轨到播放列表
   async function addTrack(playlistId: string, track: Omit<Track, 'id' | 'createdAt'>) {
     const newTrack: Track = {
       ...track,
@@ -75,7 +67,6 @@ export const useMusicStore = defineStore('music', () => {
       createdAt: Date.now(),
     };
     await addTrackToStorage(playlistId, newTrack);
-    // 同步本地状态
     const playlist = playlists.value.find((p) => p.id === playlistId);
     if (playlist) {
       playlist.tracks.push(newTrack);
@@ -84,7 +75,6 @@ export const useMusicStore = defineStore('music', () => {
     return newTrack;
   }
 
-  // 删除音轨
   async function deleteTrack(playlistId: string, trackId: string) {
     await removeTrackFromStorage(playlistId, trackId);
     const playlist = playlists.value.find((p) => p.id === playlistId);
@@ -98,7 +88,6 @@ export const useMusicStore = defineStore('music', () => {
     }
   }
 
-  // 更新音轨
   async function updateTrack(
     playlistId: string,
     trackId: string,
@@ -120,7 +109,6 @@ export const useMusicStore = defineStore('music', () => {
 
     try {
       let cid = track.cid;
-      // 旧数据可能没有 cid，重新获取
       if (!cid) {
         const videoInfo = await getVideoInfo(track.bvid);
         if (videoInfo) cid = videoInfo.cid;
@@ -144,13 +132,12 @@ export const useMusicStore = defineStore('music', () => {
     }
   }
 
-  // 停止播放
   function stopTrack() {
     audioUrl.value = null;
     currentTrack.value = null;
   }
 
-  // 下载音轨 — 重新下载+截取+编码为 MP3
+  // 下载音轨 — 获取音频流，截取时间段，通过 MediaRecorder 录制为 webm
   async function downloadTrack(track: Track): Promise<void> {
     let cid = track.cid;
     if (!cid) {
@@ -159,22 +146,71 @@ export const useMusicStore = defineStore('music', () => {
     }
     if (!cid) throw new Error('无法获取视频信息');
 
-    const mp3Blob = await cutAudioFromStream(
-      track.bvid,
-      cid,
-      track.startTime,
-      track.endTime
-    );
-    downloadAudio(mp3Blob, `${track.name}.mp3`);
+    const streamUrl = await fetchPlayUrl(track.bvid, cid);
+    if (!streamUrl) throw new Error('无法获取音频流');
+
+    // 使用 AudioContext + OfflineAudioChain 进行截取
+    const response = await fetch(streamUrl);
+    const arrayBuffer = await response.arrayBuffer();
+    const audioContext = new AudioContext();
+    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+
+    const sampleRate = audioBuffer.sampleRate;
+    const numChannels = audioBuffer.numberOfChannels;
+    const startSample = Math.floor(track.startTime * sampleRate);
+    const endSample = Math.floor(track.endTime * sampleRate);
+    const length = Math.max(0, endSample - startSample);
+
+    if (length <= 0) throw new Error('截取时间范围无效');
+
+    const newBuffer = audioContext.createBuffer(numChannels, length, sampleRate);
+    for (let ch = 0; ch < numChannels; ch++) {
+      const source = audioBuffer.getChannelData(ch);
+      const dest = newBuffer.getChannelData(ch);
+      for (let i = 0; i < length; i++) {
+        dest[i] = source[startSample + i];
+      }
+    }
+
+    // 使用 MediaStreamDestination + MediaRecorder 导出
+    const dest = audioContext.createMediaStreamDestination();
+    const source = audioContext.createBufferSource();
+    source.buffer = newBuffer;
+    source.connect(dest);
+    source.start();
+
+    const recorder = new MediaRecorder(dest.stream, { mimeType: 'audio/webm' });
+    const chunks: Blob[] = [];
+
+    return new Promise((resolve, reject) => {
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunks.push(e.data);
+      };
+      recorder.onstop = () => {
+        const blob = new Blob(chunks, { type: 'audio/webm' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${track.name}.webm`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        resolve();
+      };
+      recorder.onerror = (e) => reject(e);
+      recorder.start();
+      source.onended = () => {
+        recorder.stop();
+      };
+    });
   }
 
-  // 获取播放列表的音轨
   function getPlaylistTracks(playlistId: string): Track[] {
     const playlist = playlists.value.find((p) => p.id === playlistId);
     return playlist?.tracks ?? [];
   }
 
-  // 初始化
   async function init() {
     await loadPlaylists();
   }

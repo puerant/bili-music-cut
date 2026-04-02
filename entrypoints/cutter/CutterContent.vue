@@ -9,7 +9,6 @@ import {
   NIcon,
   NInputGroup,
   NSlider,
-  NProgress,
   NSelect,
   NDataTable,
   NDivider,
@@ -29,12 +28,10 @@ import {
   SearchOutlined,
   DownloadOutlined,
   PlusOutlined,
-  ScissorOutlined,
   BulbOutlined,
 } from '@vicons/antd';
 import { useMusicStore } from '@/stores/index';
 import { formatTime, getVideoInfo } from '@/lib/bilibili';
-import { cutAudioFromStream, downloadAudio } from '@/lib/audio-cutter';
 import type { Playlist, Track } from '@/lib/storage';
 import type { BilibiliVideoInfo } from '@/lib/bilibili';
 
@@ -53,9 +50,6 @@ const songFilter = ref('');
 // ========== 截取时间 ==========
 const downloadStartTime = ref(0);
 const downloadEndTime = ref(30);
-const downloadLoading = ref(false);
-const downloadProgress = ref(0);
-const downloadProgressMessage = ref('');
 
 // ========== 保存时选择播放列表 ==========
 const selectedPlaylistId = ref<string | null>(null);
@@ -224,6 +218,18 @@ onMounted(async () => {
 });
 
 // ========== 播放进度 ==========
+// 显示的时长是截取片段的时长
+const segmentDuration = computed(() => {
+  if (!store.currentTrack) return 0;
+  return store.currentTrack.endTime - store.currentTrack.startTime;
+});
+
+// 当前播放位置相对于 segment 起始点的偏移
+const segmentProgress = computed(() => {
+  if (!store.currentTrack) return currentTime.value;
+  return Math.max(0, currentTime.value - store.currentTrack.startTime);
+});
+
 function onTimeUpdate() {
   if (audioRef.value) {
     currentTime.value = audioRef.value.currentTime;
@@ -279,8 +285,8 @@ function searchFromRight() {
   }
 }
 
-// ========== 截取并保存 ==========
-async function downloadAndSave() {
+// ========== 添加到歌单（仅保存元数据，不截取文件） ==========
+async function addTrackToPlaylist() {
   if (!searchResult.value) return;
   const targetPlaylistId = selectedPlaylistId.value;
   if (!targetPlaylistId) {
@@ -299,29 +305,9 @@ async function downloadAndSave() {
     newPlaylistName.value = '';
   }
 
-  downloadLoading.value = true;
-  downloadProgress.value = 0;
-  downloadProgressMessage.value = '正在获取音频流...';
-
   try {
     const bvid = searchResult.value.bvid;
     const cid = searchResult.value.cid;
-    downloadProgressMessage.value = '正在下载并截取音频...';
-
-    const mp3Blob = await cutAudioFromStream(
-      bvid, cid,
-      downloadStartTime.value, downloadEndTime.value,
-      (progress) => {
-        downloadProgress.value = progress;
-        if (progress < 40) downloadProgressMessage.value = '正在下载音频...';
-        else if (progress < 60) downloadProgressMessage.value = '正在解码...';
-        else downloadProgressMessage.value = '正在编码为MP3...';
-      }
-    );
-
-    downloadProgressMessage.value = '正在保存...';
-    downloadProgress.value = 95;
-
     const duration = downloadEndTime.value - downloadStartTime.value;
     const trackName = `${searchResult.value.title} (${formatTime(downloadStartTime.value)}-${formatTime(downloadEndTime.value)})`;
 
@@ -335,17 +321,14 @@ async function downloadAndSave() {
       endTime: downloadEndTime.value,
     });
 
-    message.success('截取成功，已添加到歌单');
+    message.success('已添加到歌单');
     searchResult.value = null;
     rightBvidInput.value = '';
     showCutModal.value = false;
     activePlaylistId.value = playlistId;
     selectedPlaylistId.value = playlistId;
   } catch (err: any) {
-    message.error(err.message || '保存失败');
-  } finally {
-    downloadLoading.value = false;
-    downloadProgressMessage.value = '';
+    message.error(err.message || '添加失败');
   }
 }
 
@@ -607,16 +590,16 @@ function selectPlaylist(playlist: Playlist) {
           </n-button>
         </div>
         <div class="progress-row">
-          <span class="time-label">{{ formatTime(Math.floor(currentTime)) }}</span>
+          <span class="time-label">{{ formatTime(Math.floor(segmentProgress)) }}</span>
           <n-slider
-            :value="currentTime"
-            :max="audioDuration || 100"
+            :value="segmentProgress"
+            :max="segmentDuration || 100"
             :step="0.1"
             :format-tooltip="(v: number) => formatTime(Math.floor(v))"
-            @update:value="seekTo"
+            @update:value="(v: number) => seekTo((store.currentTrack?.startTime ?? 0) + v)"
             style="flex: 1"
           />
-          <span class="time-label">{{ formatTime(Math.floor(audioDuration)) }}</span>
+          <span class="time-label">{{ formatTime(Math.floor(segmentDuration)) }}</span>
         </div>
       </div>
 
@@ -692,21 +675,14 @@ function selectPlaylist(playlist: Playlist) {
           style="margin-bottom: 12px;"
         />
 
-        <div v-if="downloadLoading" style="margin-bottom: 12px;">
-          <n-progress type="line" :percentage="downloadProgress" status="info" />
-          <div style="font-size: 12px; color: #999; margin-top: 4px; text-align: center;">{{ downloadProgressMessage }}</div>
-        </div>
-
         <n-button
           type="primary"
           block
           size="large"
-          :loading="downloadLoading"
           :disabled="downloadEndTime <= downloadStartTime || !selectedPlaylistId"
-          @click="downloadAndSave"
+          @click="addTrackToPlaylist"
         >
-          <template #icon><n-icon><ScissorOutlined /></n-icon></template>
-          截取并保存
+          添加到歌单
         </n-button>
       </template>
     </n-modal>
