@@ -29,6 +29,8 @@ import {
   DownloadOutlined,
   PlusOutlined,
   BulbOutlined,
+  UploadOutlined,
+  ExportOutlined,
 } from '@vicons/antd';
 import { useMusicStore } from '@/stores/index';
 import { formatTime, getVideoInfo, fetchPlayUrl } from '@/lib/bilibili';
@@ -89,6 +91,9 @@ const editingTrack = ref<FlatTrack | null>(null);
 const editTrackName = ref('');
 const editTrackStartTime = ref(0);
 const editTrackEndTime = ref(30);
+
+// ========== 导入/导出 ==========
+const importFileRef = ref<HTMLInputElement | null>(null);
 
 // ========== 当前歌单信息 ==========
 const currentPlaylist = computed(() => {
@@ -551,6 +556,89 @@ function handleDeletePlaylist(playlist: Playlist) {
 function selectPlaylist(playlist: Playlist) {
   activePlaylistId.value = playlist.id;
 }
+
+// ========== 导入/导出 ==========
+function handleExport() {
+  if (store.playlists.length === 0) {
+    message.warning('没有可导出的歌单');
+    return;
+  }
+  const data = {
+    version: 1,
+    exportedAt: Date.now(),
+    playlists: store.playlists,
+  };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `bili-music-playlists-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  message.success('导出成功');
+}
+
+function handleImport() {
+  importFileRef.value?.click();
+}
+
+async function onImportFileChange(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+
+  // 重置 input 以便可以重复选择同一文件
+  input.value = '';
+
+  try {
+    const text = await file.text();
+    const data = JSON.parse(text);
+
+    if (!data.playlists || !Array.isArray(data.playlists)) {
+      message.error('无效的歌单数据格式');
+      return;
+    }
+
+    let importedCount = 0;
+    for (const pl of data.playlists) {
+      if (!pl.title || !Array.isArray(pl.tracks)) continue;
+
+      // 创建新歌单（避免 ID 冲突）
+      const newPl = await store.createPlaylist(
+        pl.title,
+        pl.cover,
+      );
+
+      // 添加所有音轨
+      for (const t of pl.tracks) {
+        if (!t.bvid || t.startTime == null || t.endTime == null) continue;
+        await store.addTrack(newPl.id, {
+          name: t.name || `未命名 (${t.bvid})`,
+          bvid: t.bvid,
+          cid: t.cid || 0,
+          sourceTitle: t.sourceTitle || '',
+          sourceCover: t.sourceCover,
+          cover: t.cover,
+          ownerName: t.ownerName,
+          duration: t.duration || (t.endTime - t.startTime),
+          startTime: t.startTime,
+          endTime: t.endTime,
+        });
+      }
+      importedCount++;
+    }
+
+    if (importedCount === 0) {
+      message.warning('没有找到有效的歌单数据');
+    } else {
+      message.success(`成功导入 ${importedCount} 个歌单`);
+    }
+  } catch (err: any) {
+    message.error('导入失败: ' + (err.message || '文件解析错误'));
+  }
+}
 </script>
 
 <template>
@@ -637,6 +725,21 @@ function selectPlaylist(playlist: Playlist) {
           <template #icon><n-icon><BulbOutlined /></n-icon></template>
           {{ isDark ? '亮色' : '暗色' }}
         </n-button>
+        <n-button size="small" quaternary @click="handleExport">
+          <template #icon><n-icon><ExportOutlined /></n-icon></template>
+          导出
+        </n-button>
+        <n-button size="small" quaternary @click="handleImport">
+          <template #icon><n-icon><UploadOutlined /></n-icon></template>
+          导入
+        </n-button>
+        <input
+          ref="importFileRef"
+          type="file"
+          accept=".json"
+          style="display: none;"
+          @change="onImportFileChange"
+        />
       </div>
 
       <n-divider style="margin: 0 12px 4px;" />

@@ -10,6 +10,7 @@ export interface Track {
   duration: number;
   sourceTitle: string;
   upName?: string;
+  ownerName?: string;
   sourceCover?: string;
   cover?: string;
   createdAt: number;
