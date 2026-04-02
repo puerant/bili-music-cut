@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { ref, computed, onMounted, h } from 'vue';
+import { ref, computed, onMounted, h, inject, type Ref } from 'vue';
 import {
   NButton,
   NEmpty,
@@ -30,6 +30,7 @@ import {
   DownloadOutlined,
   PlusOutlined,
   ScissorOutlined,
+  BulbOutlined,
 } from '@vicons/antd';
 import { useMusicStore } from '@/stores/index';
 import { formatTime, getVideoInfo } from '@/lib/bilibili';
@@ -39,13 +40,15 @@ import type { BilibiliVideoInfo } from '@/lib/bilibili';
 
 const store = useMusicStore();
 const message = useMessage();
+const toggleTheme = inject<() => void>('toggleTheme')!;
+const isDark = inject<Ref<boolean>>('isDark')!;
 
 // ========== 搜索相关 ==========
-const bvidInput = ref('');
 const searchLoading = ref(false);
 const searchResult = ref<BilibiliVideoInfo | null>(null);
 const searchError = ref('');
 const rightBvidInput = ref('');
+const songFilter = ref('');
 
 // ========== 截取时间 ==========
 const downloadStartTime = ref(0);
@@ -105,7 +108,14 @@ const allTracksFlat = computed<FlatTrack[]>(() => {
 });
 
 const displayTracks = computed(() => {
-  return currentPlaylist.value ? playlistTracks.value : allTracksFlat.value;
+  const source = currentPlaylist.value ? playlistTracks.value : allTracksFlat.value;
+  const keyword = songFilter.value.trim().toLowerCase();
+  if (!keyword) return source;
+  return source.filter(
+    (t) =>
+      t.name.toLowerCase().includes(keyword) ||
+      t.sourceTitle?.toLowerCase().includes(keyword)
+  );
 });
 
 // ========== 歌曲列表 columns ==========
@@ -262,13 +272,8 @@ async function doSearch(bvid: string) {
   }
 }
 
-function searchByBvid() {
-  doSearch(bvidInput.value);
-}
-
 function searchFromRight() {
   if (rightBvidInput.value.trim()) {
-    bvidInput.value = rightBvidInput.value;
     doSearch(rightBvidInput.value);
     rightBvidInput.value = '';
   }
@@ -332,7 +337,7 @@ async function downloadAndSave() {
 
     message.success('截取成功，已添加到歌单');
     searchResult.value = null;
-    bvidInput.value = '';
+    rightBvidInput.value = '';
     showCutModal.value = false;
     activePlaylistId.value = playlistId;
     selectedPlaylistId.value = playlistId;
@@ -426,78 +431,92 @@ function selectPlaylist(playlist: Playlist) {
 </script>
 
 <template>
-  <div class="app-layout">
-    <!-- ===== 左侧：内容区域 ===== -->
+  <div class="app-layout" :class="{ 'is-light': !isDark }">
+    <!-- ===== 左侧：歌单内容区域 (70%) ===== -->
     <div class="left-panel">
-      <!-- 上方：搜索栏 -->
-      <div class="search-bar">
-        <n-input-group>
-          <n-input
-            v-model:value="bvidInput"
-            placeholder="输入BV号搜索视频..."
-            size="large"
-            clearable
-            @keydown.enter="searchByBvid"
-          >
-            <template #prefix>
-              <n-icon><SearchOutlined /></n-icon>
-            </template>
-          </n-input>
-          <n-button
-            type="primary"
-            size="large"
-            :loading="searchLoading"
-            :disabled="!bvidInput.trim()"
-            @click="searchByBvid"
-          >
-            搜索
-          </n-button>
-        </n-input-group>
-        <div v-if="searchError" style="margin-top: 8px; color: #e88080; font-size: 13px;">
-          {{ searchError }}
+      <div class="content-area">
+        <!-- 表头上方：歌单名称(左) + 搜索栏(右) -->
+        <div class="content-header">
+          <div class="content-title-group">
+            <span class="content-title">
+              {{ currentPlaylist ? currentPlaylist.title : '全部歌曲' }}
+            </span>
+            <span class="content-count">{{ displayTracks.length }} 首</span>
+          </div>
+          <div class="content-search">
+            <n-input
+              v-model:value="songFilter"
+              placeholder="搜索歌曲..."
+              size="small"
+              clearable
+              style="width: 200px;"
+            >
+              <template #prefix>
+                <n-icon size="14"><SearchOutlined /></n-icon>
+              </template>
+            </n-input>
+          </div>
         </div>
-      </div>
 
-      <!-- 下方：歌曲列表 -->
-      <div class="song-list-area">
-        <div class="song-list-header">
-          <span class="song-list-title">
-            {{ currentPlaylist ? currentPlaylist.title : '全部歌曲' }}
-          </span>
-          <span class="song-list-count">
-            {{ displayTracks.length }} 首
-          </span>
+        <!-- 歌曲表格 -->
+        <div class="table-area">
+          <n-data-table
+            v-if="displayTracks.length > 0"
+            :columns="songColumns"
+            :data="displayTracks"
+            :bordered="false"
+            :single-line="false"
+            size="small"
+            :row-props="(row: any) => ({
+              style: store.currentTrack?.id === row.id ? 'background: rgba(99,226,183,0.08); cursor: pointer;' : 'cursor: pointer;',
+              onClick: () => handlePlayTrack(row),
+            })"
+            style="flex: 1"
+          />
+          <n-empty
+            v-else
+            :description="songFilter ? '没有匹配的歌曲' : '暂无歌曲，从右侧搜索BV号添加'"
+            style="margin-top: 80px"
+          />
         </div>
-        <n-data-table
-          v-if="displayTracks.length > 0"
-          :columns="songColumns"
-          :data="displayTracks"
-          :bordered="false"
-          :single-line="false"
-          size="small"
-          :row-props="(row: any) => ({
-            style: store.currentTrack?.id === row.id ? 'background: rgba(99,226,183,0.08); cursor: pointer;' : 'cursor: pointer;',
-            onClick: () => handlePlayTrack(row),
-          })"
-          style="flex: 1"
-        />
-        <n-empty
-          v-else
-          description="暂无歌曲，搜索BV号添加音频"
-          style="margin-top: 80px"
-        />
       </div>
     </div>
 
-    <!-- ===== 右侧：歌单 + 搜索 ===== -->
+    <!-- ===== 右侧：歌单列表区域 (30%) ===== -->
     <div class="right-panel">
-      <div class="right-panel-header">
-        <span style="font-weight: 600; font-size: 15px;">歌单列表</span>
-        <n-button size="small" type="primary" quaternary @click="showCreatePlaylist = true">
+      <!-- 搜索框 (最上方) -->
+      <div class="right-search">
+        <n-input-group>
+          <n-input
+            v-model:value="rightBvidInput"
+            placeholder="输入BV号..."
+            size="small"
+            @keydown.enter="searchFromRight"
+          >
+            <template #prefix>
+              <n-icon size="14"><SearchOutlined /></n-icon>
+            </template>
+          </n-input>
+          <n-button size="small" type="primary" :loading="searchLoading" :disabled="!rightBvidInput.trim()" @click="searchFromRight">
+            搜索
+          </n-button>
+        </n-input-group>
+        <div v-if="searchError" class="search-error">{{ searchError }}</div>
+      </div>
+
+      <!-- 设置栏 -->
+      <div class="right-toolbar">
+        <n-button size="small" quaternary @click="showCreatePlaylist = true">
           <template #icon><n-icon><PlusOutlined /></n-icon></template>
-          新建
+          新建歌单
+        </n-button>
+        <n-button size="small" quaternary @click="toggleTheme">
+          <template #icon><n-icon><BulbOutlined /></n-icon></template>
+          {{ isDark ? '亮色' : '暗色' }}
         </n-button>
       </div>
+
+      <n-divider style="margin: 0 12px 4px;" />
 
       <!-- 全部歌曲 -->
       <div
@@ -514,11 +533,9 @@ function selectPlaylist(playlist: Playlist) {
         </div>
       </div>
 
-      <n-divider style="margin: 6px 12px;" />
-
       <!-- 歌单列表 -->
       <div class="playlist-scroll">
-        <n-empty v-if="store.playlists.length === 0" description="暂无歌单" size="small" style="margin-top: 24px;" />
+        <n-empty v-if="store.playlists.length === 0" description="暂无歌单" size="small" style="margin-top: 20px;" />
         <div
           v-for="playlist in store.playlists"
           :key="playlist.id"
@@ -551,23 +568,6 @@ function selectPlaylist(playlist: Playlist) {
           </div>
         </div>
       </div>
-
-      <!-- 右侧底部：BV搜索添加 -->
-      <div class="right-panel-search">
-        <n-input
-          v-model:value="rightBvidInput"
-          placeholder="输入BV号搜索..."
-          size="small"
-          @keydown.enter="searchFromRight"
-        >
-          <template #prefix>
-            <n-icon size="14"><SearchOutlined /></n-icon>
-          </template>
-        </n-input>
-        <n-button size="small" type="primary" block :loading="searchLoading" :disabled="!rightBvidInput.trim()" @click="searchFromRight">
-          搜索并截取
-        </n-button>
-      </div>
     </div>
 
     <!-- ===== 底部播放器 ===== -->
@@ -581,7 +581,6 @@ function selectPlaylist(playlist: Playlist) {
         autoplay
       />
 
-      <!-- 左：歌曲信息 -->
       <div class="player-song-info">
         <div class="player-cover">
           <img v-if="store.currentTrack?.cover || store.currentTrack?.sourceCover" :src="store.currentTrack?.cover || store.currentTrack?.sourceCover" alt="" />
@@ -596,7 +595,6 @@ function selectPlaylist(playlist: Playlist) {
         <n-spin v-else-if="store.isStreamLoading" size="small" />
       </div>
 
-      <!-- 中：播放控制 + 进度条 -->
       <div class="player-controls">
         <div class="control-buttons">
           <n-button quaternary circle :disabled="!store.currentTrack" @click="togglePlay">
@@ -622,7 +620,6 @@ function selectPlaylist(playlist: Playlist) {
         </div>
       </div>
 
-      <!-- 右：下载按钮 -->
       <div class="player-actions">
         <n-button
           v-if="store.currentTrack"
@@ -729,81 +726,141 @@ function selectPlaylist(playlist: Playlist) {
 <style scoped>
 /* ========== Layout ========== */
 .app-layout {
+  --bg-base: #101014;
+  --bg-content: #18181e;
+  --bg-sidebar: #141418;
+  --bg-player: #18181c;
+  --border: #2a2a32;
+  --border-player: #2c2c34;
+  --text-primary: #e0e0e6;
+  --text-secondary: #888;
+  --text-muted: #666;
+  --scrollbar-thumb: #333;
+  --hover-bg: rgba(255, 255, 255, 0.04);
+  --active-bg: rgba(99, 226, 183, 0.08);
+}
+
+.app-layout.is-light {
+  --bg-base: #f0f0f5;
+  --bg-content: #ffffff;
+  --bg-sidebar: #eaeaf0;
+  --bg-player: #f5f5fa;
+  --border: #e0e0e6;
+  --border-player: #d8d8de;
+  --text-primary: #1a1a2e;
+  --text-secondary: #666;
+  --text-muted: #999;
+  --scrollbar-thumb: #c0c0c6;
+  --hover-bg: rgba(0, 0, 0, 0.04);
+  --active-bg: rgba(99, 226, 183, 0.12);
+}
+
+.app-layout {
   display: grid;
   height: 100vh;
-  grid-template-columns: 1fr 280px;
+  grid-template-columns: 7fr 3fr;
   grid-template-rows: 1fr 72px;
   grid-template-areas:
     "left right"
     "player player";
-  background: #101014;
-  color: #e0e0e6;
+  gap: 0;
+  background: var(--bg-base);
+  color: var(--text-primary);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   overflow: hidden;
 }
 
-/* ========== Left Panel ========== */
+/* ========== Left Panel (70%) ========== */
 .left-panel {
   grid-area: left;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border-right: 1px solid #2c2c34;
+  padding: 16px 20px;
 }
 
-.search-bar {
-  padding: 16px 20px 12px;
-  flex-shrink: 0;
-  border-bottom: 1px solid #1e1e24;
-}
-
-.song-list-area {
+.content-area {
   flex: 1;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  padding: 0;
+  background: var(--bg-content);
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  padding: 16px 20px;
 }
 
-.song-list-header {
+.content-header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
-  padding: 12px 20px 8px;
+  margin-bottom: 12px;
   flex-shrink: 0;
 }
 
-.song-list-title {
-  font-size: 16px;
-  font-weight: 600;
+.content-title-group {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
 }
 
-.song-list-count {
+.content-title {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.content-count {
   font-size: 12px;
-  color: #888;
+  color: var(--text-muted);
 }
 
-/* ========== Right Panel ========== */
+.content-search {
+  flex-shrink: 0;
+}
+
+.table-area {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ========== Right Panel (30%) ========== */
 .right-panel {
   grid-area: right;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #141418;
+  background: var(--bg-sidebar);
+  padding: 16px 14px;
 }
 
-.right-panel-header {
+/* 搜索框 */
+.right-search {
+  flex-shrink: 0;
+  margin-bottom: 10px;
+}
+
+.search-error {
+  margin-top: 6px;
+  color: #e88080;
+  font-size: 12px;
+}
+
+/* 设置栏 */
+.right-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 16px 16px 8px;
+  gap: 6px;
   flex-shrink: 0;
+  margin-bottom: 4px;
 }
 
+/* 歌单列表 */
 .playlist-scroll {
   flex: 1;
   overflow-y: auto;
-  padding: 0 8px 8px;
+  padding: 0 0 8px;
 }
 
 .playlist-scroll::-webkit-scrollbar {
@@ -811,7 +868,7 @@ function selectPlaylist(playlist: Playlist) {
 }
 
 .playlist-scroll::-webkit-scrollbar-thumb {
-  background: #333;
+  background: var(--scrollbar-thumb);
   border-radius: 2px;
 }
 
@@ -826,11 +883,11 @@ function selectPlaylist(playlist: Playlist) {
 }
 
 .playlist-item:hover {
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--hover-bg);
 }
 
 .playlist-item.active {
-  background: rgba(99, 226, 183, 0.08);
+  background: var(--active-bg);
 }
 
 .playlist-item-cover {
@@ -880,7 +937,7 @@ function selectPlaylist(playlist: Playlist) {
 
 .playlist-item-meta {
   font-size: 11px;
-  color: #666;
+  color: var(--text-muted);
   margin-top: 2px;
 }
 
@@ -895,16 +952,6 @@ function selectPlaylist(playlist: Playlist) {
   opacity: 1;
 }
 
-/* 右侧底部搜索区 */
-.right-panel-search {
-  padding: 12px;
-  border-top: 1px solid #1e1e24;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
 /* ========== Player Bar ========== */
 .player-bar {
   grid-area: player;
@@ -912,8 +959,8 @@ function selectPlaylist(playlist: Playlist) {
   align-items: center;
   gap: 20px;
   padding: 0 20px;
-  background: #18181c;
-  border-top: 1px solid #2c2c34;
+  background: var(--bg-player);
+  border-top: 1px solid var(--border-player);
 }
 
 .player-song-info {
@@ -962,7 +1009,7 @@ function selectPlaylist(playlist: Playlist) {
 
 .player-track-source {
   font-size: 11px;
-  color: #666;
+  color: var(--text-muted);
   margin-top: 2px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -994,7 +1041,7 @@ function selectPlaylist(playlist: Playlist) {
 
 .time-label {
   font-size: 11px;
-  color: #666;
+  color: var(--text-muted);
   min-width: 36px;
   text-align: center;
   font-variant-numeric: tabular-nums;
