@@ -1,6 +1,8 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { albumDb, trackDb, type Album, type Track } from '@/lib/db';
+import { getAudioStreamDirectUrl, getVideoInfo } from '@/lib/bilibili';
+import { cutAudioFromStream, downloadAudio } from '@/lib/audio-cutter';
 
 export const useMusicStore = defineStore('music', () => {
   // 状态
@@ -10,6 +12,7 @@ export const useMusicStore = defineStore('music', () => {
   const currentAlbum = ref<Album | null>(null);
   const isLoading = ref(false);
   const audioUrl = ref<string | null>(null);
+  const isStreamLoading = ref(false);
 
   // 计算属性
   const tracksWithoutAlbum = computed(() => {
@@ -78,26 +81,45 @@ export const useMusicStore = defineStore('music', () => {
     }
   }
 
-  // 播放音轨
+  // 播放音轨 - 动态获取流URL
   async function playTrack(track: Track) {
-    // 释放之前的URL
-    if (audioUrl.value) {
-      URL.revokeObjectURL(audioUrl.value);
-    }
+    audioUrl.value = null;
+    isStreamLoading.value = true;
 
-    const url = await trackDb.getAudioUrl(track.id);
-    if (url) {
-      currentTrack.value = track;
-      audioUrl.value = url;
+    try {
+      let cid = track.sourceCid;
+      // 旧数据可能没有 cid，重新获取
+      if (!cid) {
+        const videoInfo = await getVideoInfo(track.sourceBvid);
+        if (videoInfo) {
+          cid = videoInfo.cid;
+          await trackDb.update(track.id, { sourceCid: cid } as any);
+          const idx = tracks.value.findIndex(t => t.id === track.id);
+          if (idx !== -1) tracks.value[idx].sourceCid = cid;
+        }
+      }
+
+      if (!cid) {
+        console.error('无法获取cid');
+        isStreamLoading.value = false;
+        return;
+      }
+
+      const streamUrl = await getAudioStreamDirectUrl(track.sourceBvid, cid);
+      if (streamUrl) {
+        currentTrack.value = track;
+        audioUrl.value = streamUrl;
+      }
+    } catch (error) {
+      console.error('播放失败:', error);
+    } finally {
+      isStreamLoading.value = false;
     }
   }
 
   // 停止播放
   function stopTrack() {
-    if (audioUrl.value) {
-      URL.revokeObjectURL(audioUrl.value);
-      audioUrl.value = null;
-    }
+    audioUrl.value = null;
     currentTrack.value = null;
   }
 
@@ -106,9 +128,22 @@ export const useMusicStore = defineStore('music', () => {
     return tracks.value.filter((t) => t.albumId === albumId);
   }
 
-  // 获取音轨音频数据
-  async function getTrackAudio(id: string): Promise<Blob | undefined> {
-    return trackDb.getAudioData(id);
+  // 下载音轨 - 动态获取 + 截取 + 编码为 MP3
+  async function downloadTrack(track: Track): Promise<void> {
+    let cid = track.sourceCid;
+    if (!cid) {
+      const videoInfo = await getVideoInfo(track.sourceBvid);
+      cid = videoInfo?.cid ?? 0;
+    }
+    if (!cid) throw new Error('无法获取视频信息');
+
+    const mp3Blob = await cutAudioFromStream(
+      track.sourceBvid,
+      cid,
+      track.startTime,
+      track.endTime
+    );
+    downloadAudio(mp3Blob, `${track.name}.mp3`);
   }
 
   // 初始化
@@ -117,16 +152,14 @@ export const useMusicStore = defineStore('music', () => {
   }
 
   return {
-    // 状态
     albums,
     tracks,
     currentTrack,
     currentAlbum,
     isLoading,
     audioUrl,
-    // 计算属性
+    isStreamLoading,
     tracksWithoutAlbum,
-    // 方法
     loadAlbums,
     loadTracks,
     createAlbum,
@@ -137,7 +170,7 @@ export const useMusicStore = defineStore('music', () => {
     playTrack,
     stopTrack,
     getAlbumTracks,
-    getTrackAudio,
+    downloadTrack,
     init,
   };
 });

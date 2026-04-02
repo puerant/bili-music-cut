@@ -1,39 +1,24 @@
-import { checkServerHealth, downloadAndCut, DEFAULT_SERVER_URL } from '@/lib/server-client';
-
 // 消息类型定义
-interface DownloadMessage {
-  type: 'DOWNLOAD_AUDIO';
-  url: string;
-}
-
-interface CheckServerMessage {
-  type: 'CHECK_SERVER';
-  url?: string;
-}
-
-interface ServerCutMessage {
-  type: 'SERVER_DOWNLOAD_AND_CUT';
+interface FetchStreamUrlMessage {
+  type: 'FETCH_STREAM_URL';
   bvid: string;
-  startTime: number;
-  endTime: number;
-  serverUrl?: string;
+  cid: number;
 }
 
-type Message = DownloadMessage | CheckServerMessage | ServerCutMessage;
-
-interface DownloadResponse {
-  error?: string;
-  data?: ArrayBuffer;
-  ok?: boolean;
+interface FetchVideoInfoMessage {
+  type: 'FETCH_VIDEO_INFO';
+  bvid: string;
 }
+
+type Message = FetchStreamUrlMessage | FetchVideoInfoMessage;
 
 export default defineBackground(() => {
   console.log('[B站音乐截取] 后台服务已启动', { id: browser.runtime.id });
 
   browser.runtime.onMessage.addListener(
     (message: Message, _sender, sendResponse) => {
-      if (message.type === 'DOWNLOAD_AUDIO') {
-        handleDownloadAudio(message.url)
+      if (message.type === 'FETCH_STREAM_URL') {
+        handleFetchStreamUrl(message.bvid, message.cid)
           .then(sendResponse)
           .catch((error) => {
             sendResponse({ error: error.message });
@@ -41,45 +26,78 @@ export default defineBackground(() => {
         return true;
       }
 
-      if (message.type === 'CHECK_SERVER') {
-        checkServerHealth(message.url || DEFAULT_SERVER_URL)
-          .then(result => sendResponse({ ok: result.ok, data: result.data }))
-          .catch(() => sendResponse({ ok: false }));
-        return true;
-      }
-
-      if (message.type === 'SERVER_DOWNLOAD_AND_CUT') {
-        downloadAndCut(
-          { bvid: message.bvid, startTime: message.startTime, endTime: message.endTime },
-          message.serverUrl || DEFAULT_SERVER_URL
-        )
-          .then(data => sendResponse({ data }))
-          .catch(err => sendResponse({ error: err.message }));
+      if (message.type === 'FETCH_VIDEO_INFO') {
+        handleFetchVideoInfo(message.bvid)
+          .then(sendResponse)
+          .catch((error) => {
+            sendResponse({ error: error.message });
+          });
         return true;
       }
     }
   );
 });
 
-// 处理音频下载 (绑过CORS限制)
-async function handleDownloadAudio(url: string): Promise<DownloadResponse> {
+/**
+ * 从后台上下文获取音频流URL（携带用户cookies）
+ * cutter页面无法直接访问bilibili的cookies，需通过background中转
+ */
+async function handleFetchStreamUrl(
+  bvid: string,
+  cid: number
+): Promise<{ url?: string; error?: string }> {
   try {
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        Referer: 'https://www.bilibili.com',
-        Origin: 'https://www.bilibili.com',
-      },
-    });
+    const response = await fetch(
+      `https://api.bilibili.com/x/player/playurl?bvid=${bvid}&cid=${cid}&qn=16&fnval=16&fnver=0&fourk=0`,
+      {
+        credentials: 'include',
+        headers: {
+          Referer: 'https://www.bilibili.com',
+        },
+      }
+    );
+    const json = await response.json();
 
-    if (!response.ok) {
-      throw new Error(`下载失败: ${response.status}`);
+    if (json.code !== 0) {
+      return { error: json.message || '获取播放地址失败' };
     }
 
-    const arrayBuffer = await response.arrayBuffer();
-    return { data: arrayBuffer };
+    const dash = json.data.dash;
+    if (!dash?.audio?.length) {
+      return { error: '没有找到音频流' };
+    }
+
+    const audio = dash.audio.sort((a: any, b: any) => b.bandwidth - a.bandwidth)[0];
+    return { url: audio.baseUrl };
   } catch (error: any) {
-    console.error('[B站音乐截取] 下载失败:', error);
-    return { error: error.message || '下载失败' };
+    return { error: error.message || '获取流地址失败' };
+  }
+}
+
+/**
+ * 从后台获取视频信息（携带用户cookies）
+ */
+async function handleFetchVideoInfo(
+  bvid: string
+): Promise<{ data?: any; error?: string }> {
+  try {
+    const response = await fetch(
+      `https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`,
+      {
+        credentials: 'include',
+        headers: {
+          Referer: 'https://www.bilibili.com',
+        },
+      }
+    );
+    const json = await response.json();
+
+    if (json.code !== 0) {
+      return { error: json.message || '获取视频信息失败' };
+    }
+
+    return { data: json.data };
+  } catch (error: any) {
+    return { error: error.message || '获取视频信息失败' };
   }
 }

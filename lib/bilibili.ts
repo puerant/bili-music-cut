@@ -4,7 +4,7 @@ export interface BilibiliVideoInfo {
   aid: number;
   title: string;
   cover: string;
-  duration: number; // 秒
+  duration: number;
   owner: {
     mid: number;
     name: string;
@@ -132,7 +132,6 @@ export async function getAudioStreamUrl(
       return null;
     }
 
-    // 选择最高质量的音频
     const audio = dash.audio.sort((a: any, b: any) => b.bandwidth - a.bandwidth)[0];
 
     return {
@@ -153,7 +152,6 @@ export async function getAudioStreamUrl(
 export async function getAudioStreamUrlByBvid(
   bvid: string
 ): Promise<AudioStreamInfo | null> {
-  // 优先从视频信息接口拿cid（信息更全）
   const videoInfo = await getVideoInfo(bvid);
   const cid = videoInfo?.cid ?? (await getCid(bvid));
 
@@ -165,28 +163,78 @@ export async function getAudioStreamUrlByBvid(
   return getAudioStreamUrl(bvid, cid);
 }
 
-// 下载音频流 (需要通过background代理请求以绑过CORS)
+/**
+ * 直接下载音频流数据（declarativeNetRequest 自动注入 Referer 头）
+ */
 export async function downloadAudioStream(
   audioUrl: string,
   onProgress?: (progress: number) => void
 ): Promise<ArrayBuffer | null> {
   try {
-    // 发送消息给background脚本进行下载
-    const response = await browser.runtime.sendMessage({
-      type: 'DOWNLOAD_AUDIO',
-      url: audioUrl,
-    });
+    const response = await fetch(audioUrl, { method: 'GET' });
 
-    if (response.error) {
-      console.error('下载失败:', response.error);
+    if (!response.ok) {
+      console.error('下载失败:', response.status);
       return null;
     }
 
-    return response.data;
+    const contentLength = response.headers.get('content-length');
+    if (contentLength && onProgress) {
+      const total = parseInt(contentLength, 10);
+      const reader = response.body?.getReader();
+      if (reader) {
+        const chunks: Uint8Array[] = [];
+        let received = 0;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          received += value.length;
+          onProgress(Math.round((received / total) * 100));
+        }
+        const result = new Uint8Array(received);
+        let offset = 0;
+        for (const chunk of chunks) {
+          result.set(chunk, offset);
+          offset += chunk.length;
+        }
+        return result.buffer;
+      }
+    }
+
+    return response.arrayBuffer();
   } catch (error) {
     console.error('下载音频流失败:', error);
     return null;
   }
+}
+
+/**
+ * 获取音频流直接播放 URL（用于 <audio> src）
+ */
+export async function getAudioStreamDirectUrl(
+  bvid: string,
+  cid: number
+): Promise<string | null> {
+  const streamInfo = await getAudioStreamUrl(bvid, cid);
+  if (!streamInfo) return null;
+  return streamInfo.baseUrl;
+}
+
+/**
+ * 获取音频流 URL 并下载原始数据（用于截取）
+ */
+export async function fetchAudioForCutting(
+  bvid: string,
+  cid: number,
+  onProgress?: (progress: number) => void
+): Promise<ArrayBuffer | null> {
+  const streamInfo = await getAudioStreamUrl(bvid, cid);
+  if (!streamInfo) {
+    console.error('无法获取音频流地址');
+    return null;
+  }
+  return downloadAudioStream(streamInfo.baseUrl, onProgress);
 }
 
 // 格式化时间 (秒 -> mm:ss)

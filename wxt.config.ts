@@ -6,18 +6,28 @@ export default defineConfig({
   manifest: {
     name: 'B站音乐截取',
     description: '从B站视频截取音频片段，创建个人音乐收藏',
-    version: '0.1.0',
+    version: '0.2.0',
     permissions: [
       'storage',
       'downloads',
       'activeTab',
       'scripting',
+      'declarativeNetRequest',
     ],
     host_permissions: [
       '*://*.bilibili.com/*',
       '*://*.bilivideo.com/*',
+      '*://*.bilivideo.cn/*',
       '*://*.hdslb.com/*',
-      'http://localhost:9721/*',
     ],
+    declarative_net_request: {
+      rule_resources: [
+        {
+          id: 'bilivideo_referer_rules',
+          enabled: true,
+          path: 'rules.json',
+        },
+      ],
+    },
   },
 });

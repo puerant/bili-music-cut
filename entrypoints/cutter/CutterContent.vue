@@ -11,6 +11,7 @@ import {
   NIcon,
   NInputGroup,
   NSlider,
+  NProgress,
   useMessage,
 } from 'naive-ui';
 import {
@@ -26,7 +27,7 @@ import {
 } from '@vicons/antd';
 import { useMusicStore } from '@/stores/index';
 import { formatTime, getVideoInfo } from '@/lib/bilibili';
-import { downloadAudio } from '@/lib/audio-cutter';
+import { cutAudioFromStream, downloadAudio } from '@/lib/audio-cutter';
 import { trackDb, albumDb } from '@/lib/db';
 import type { Album, Track } from '@/lib/db';
 import type { BilibiliVideoInfo } from '@/lib/bilibili';
@@ -47,9 +48,8 @@ const searchError = ref('');
 const downloadStartTime = ref(0);
 const downloadEndTime = ref(30);
 const downloadLoading = ref(false);
-
-// 服务器状态
-const serverStatus = ref<'checking' | 'online' | 'offline'>('checking');
+const downloadProgress = ref(0);
+const downloadProgressMessage = ref('');
 
 // 播放器
 const isPlaying = ref(false);
@@ -88,35 +88,32 @@ const hasAlbums = computed(() => store.albums.length > 0);
 
 onMounted(async () => {
   await store.init();
-  checkServer();
 });
 
 // 播放进度
 function onTimeUpdate() {
   if (audioRef.value) {
     currentTime.value = audioRef.value.currentTime;
+
+    // 到达截取终点时暂停
+    if (store.currentTrack && audioRef.value.currentTime >= store.currentTrack.endTime) {
+      audioRef.value.pause();
+      isPlaying.value = false;
+    }
   }
 }
 
 function onLoadedMetadata() {
-  if (audioRef.value) {
+  if (audioRef.value && store.currentTrack) {
     audioDuration.value = audioRef.value.duration;
+    // 自动跳到截取起点
+    audioRef.value.currentTime = store.currentTrack.startTime;
   }
 }
 
 function onAudioEnded() {
   isPlaying.value = false;
   currentTime.value = 0;
-}
-
-// 服务器检查
-async function checkServer() {
-  try {
-    const response = await browser.runtime.sendMessage({ type: 'CHECK_SERVER' });
-    serverStatus.value = response?.ok ? 'online' : 'offline';
-  } catch {
-    serverStatus.value = 'offline';
-  }
 }
 
 // BV搜索
@@ -148,48 +145,55 @@ async function searchByBvid() {
   }
 }
 
-// 下载并截取
+// 下载并截取（客户端）
 async function downloadAndSave() {
   if (!searchResult.value) return;
 
-  if (serverStatus.value !== 'online') {
-    message.error('本地服务未启动，请先运行: cd server && node index.js');
-    return;
-  }
-
   downloadLoading.value = true;
+  downloadProgress.value = 0;
+  downloadProgressMessage.value = '正在获取音频流...';
 
   try {
-    const response = await browser.runtime.sendMessage({
-      type: 'SERVER_DOWNLOAD_AND_CUT',
-      bvid: searchResult.value.bvid,
-      startTime: downloadStartTime.value,
-      endTime: downloadEndTime.value,
-    });
+    const bvid = searchResult.value.bvid;
+    const cid = searchResult.value.cid;
 
-    if (response.error) {
-      message.error(`下载失败: ${response.error}`);
-      return;
-    }
+    downloadProgressMessage.value = '正在下载并截取音频...';
 
-    const audioBlob = new Blob([response.data], { type: 'audio/mpeg' });
+    const mp3Blob = await cutAudioFromStream(
+      bvid,
+      cid,
+      downloadStartTime.value,
+      downloadEndTime.value,
+      (progress) => {
+        downloadProgress.value = progress;
+        if (progress < 40) {
+          downloadProgressMessage.value = '正在下载音频...';
+        } else if (progress < 60) {
+          downloadProgressMessage.value = '正在解码...';
+        } else {
+          downloadProgressMessage.value = '正在编码为MP3...';
+        }
+      }
+    );
+
+    downloadProgressMessage.value = '正在保存...';
+    downloadProgress.value = 95;
+
     const duration = downloadEndTime.value - downloadStartTime.value;
     const trackName = `${searchResult.value.title} (${formatTime(downloadStartTime.value)}-${formatTime(downloadEndTime.value)})`;
 
-    await trackDb.create(
-      {
-        name: trackName,
-        sourceUrl: `https://www.bilibili.com/video/${searchResult.value.bvid}`,
-        sourceBvid: searchResult.value.bvid,
-        sourceTitle: searchResult.value.title,
-        sourceCover: searchResult.value.cover,
-        cover: searchResult.value.cover,
-        duration,
-        startTime: downloadStartTime.value,
-        endTime: downloadEndTime.value,
-      },
-      audioBlob
-    );
+    await trackDb.create({
+      name: trackName,
+      sourceUrl: `https://www.bilibili.com/video/${bvid}`,
+      sourceBvid: bvid,
+      sourceCid: cid,
+      sourceTitle: searchResult.value.title,
+      sourceCover: searchResult.value.cover,
+      cover: searchResult.value.cover,
+      duration,
+      startTime: downloadStartTime.value,
+      endTime: downloadEndTime.value,
+    });
 
     await store.loadTracks();
     message.success('音轨保存成功');
@@ -201,6 +205,7 @@ async function downloadAndSave() {
     message.error(err.message || '保存失败');
   } finally {
     downloadLoading.value = false;
+    downloadProgressMessage.value = '';
   }
 }
 
@@ -233,10 +238,11 @@ function seekTo(time: number) {
 }
 
 async function handleDownloadTrack(track: Track) {
-  const audioBlob = await store.getTrackAudio(track.id);
-  if (audioBlob) {
-    downloadAudio(audioBlob, `${track.name}.mp3`);
+  try {
+    await store.downloadTrack(track);
     message.success('下载已开始');
+  } catch (err: any) {
+    message.error(err.message || '下载失败');
   }
 }
 
@@ -314,12 +320,6 @@ function openAlbumDetail(album: Album) {
           </div>
           <h1 class="cover-title">B站音乐截取</h1>
           <p class="cover-desc">输入BV号搜索视频，截取你喜欢的音乐片段</p>
-          <div v-if="serverStatus === 'offline'" class="server-notice">
-            本地服务未启动，请运行: <code>cd server && node index.js</code>
-          </div>
-          <div v-else-if="serverStatus === 'online'" class="server-notice online">
-            本地服务已连接
-          </div>
         </div>
 
         <!-- 最近音轨 -->
@@ -394,12 +394,24 @@ function openAlbumDetail(album: Album) {
             截取: <strong>{{ formatTime(downloadStartTime) }}</strong> → <strong>{{ formatTime(downloadEndTime) }}</strong>
             (共 <strong>{{ formatTime(Math.max(0, downloadEndTime - downloadStartTime)) }}</strong>)
           </div>
+
+          <!-- 进度条 -->
+          <div v-if="downloadLoading" class="download-progress">
+            <n-progress
+              type="line"
+              :percentage="downloadProgress"
+              :show-indicator="true"
+              status="info"
+            />
+            <p class="progress-message">{{ downloadProgressMessage }}</p>
+          </div>
+
           <n-button
             type="primary"
             size="large"
             block
             :loading="downloadLoading"
-            :disabled="downloadEndTime <= downloadStartTime || serverStatus !== 'online'"
+            :disabled="downloadEndTime <= downloadStartTime"
             @click="downloadAndSave"
           >
             <template #icon><n-icon><DownloadOutlined /></n-icon></template>
@@ -462,7 +474,6 @@ function openAlbumDetail(album: Album) {
                 v-model:value="bvidInput"
                 placeholder="输入BV号"
                 size="medium"
-                :disabled="serverStatus === 'offline'"
                 @keydown.enter="searchByBvid"
               >
                 <template #prefix>
@@ -560,10 +571,10 @@ function openAlbumDetail(album: Album) {
     </aside>
 
     <!-- 底部播放器 -->
-    <footer class="cutter-player" v-if="store.audioUrl">
+    <footer class="cutter-player" v-if="store.audioUrl || store.isStreamLoading">
       <audio
         ref="audioRef"
-        :src="store.audioUrl"
+        :src="store.audioUrl || undefined"
         @ended="onAudioEnded"
         @timeupdate="onTimeUpdate"
         @loadedmetadata="onLoadedMetadata"
@@ -582,28 +593,33 @@ function openAlbumDetail(album: Album) {
         </div>
       </div>
       <div class="player-center">
-        <div class="player-controls">
-          <n-button quaternary circle size="large" @click="togglePlay">
-            <template #icon>
-              <n-icon size="28">
-                <PauseCircleOutlined v-if="isPlaying" />
-                <PlayCircleOutlined v-else />
-              </n-icon>
-            </template>
-          </n-button>
+        <div v-if="store.isStreamLoading" class="player-loading">
+          <n-spin size="small" /> <span>加载中...</span>
         </div>
-        <div class="player-progress">
-          <span class="progress-time">{{ formatTime(Math.floor(currentTime)) }}</span>
-          <n-slider
-            :value="currentTime"
-            :max="audioDuration || 100"
-            :step="0.1"
-            :format-tooltip="(v: number) => formatTime(Math.floor(v))"
-            @update:value="seekTo"
-            style="flex: 1"
-          />
-          <span class="progress-time">{{ formatTime(Math.floor(audioDuration)) }}</span>
-        </div>
+        <template v-else>
+          <div class="player-controls">
+            <n-button quaternary circle size="large" @click="togglePlay">
+              <template #icon>
+                <n-icon size="28">
+                  <PauseCircleOutlined v-if="isPlaying" />
+                  <PlayCircleOutlined v-else />
+                </n-icon>
+              </template>
+            </n-button>
+          </div>
+          <div class="player-progress">
+            <span class="progress-time">{{ formatTime(Math.floor(currentTime)) }}</span>
+            <n-slider
+              :value="currentTime"
+              :max="audioDuration || 100"
+              :step="0.1"
+              :format-tooltip="(v: number) => formatTime(Math.floor(v))"
+              @update:value="seekTo"
+              style="flex: 1"
+            />
+            <span class="progress-time">{{ formatTime(Math.floor(audioDuration)) }}</span>
+          </div>
+        </template>
       </div>
       <div class="player-right">
         <n-button quaternary circle size="small" @click="store.currentTrack && handleDownloadTrack(store.currentTrack)">
@@ -683,27 +699,6 @@ function openAlbumDetail(album: Album) {
   font-size: 15px;
   color: #888;
   margin: 0;
-}
-
-.server-notice {
-  margin-top: 16px;
-  padding: 8px 16px;
-  border-radius: 8px;
-  font-size: 13px;
-  background: #fff2f2;
-  color: #ff4d4f;
-}
-
-.server-notice.online {
-  background: #f0fff4;
-  color: #52c41a;
-}
-
-.server-notice code {
-  background: rgba(0, 0, 0, 0.06);
-  padding: 2px 6px;
-  border-radius: 3px;
-  font-size: 12px;
 }
 
 .recent-tracks {
@@ -890,6 +885,17 @@ function openAlbumDetail(album: Album) {
 
 .cut-summary strong {
   color: #00a1d6;
+}
+
+.download-progress {
+  margin-bottom: 16px;
+}
+
+.progress-message {
+  font-size: 12px;
+  color: #888;
+  margin-top: 4px;
+  text-align: center;
 }
 
 /* 专辑音轨列表 */
@@ -1155,6 +1161,14 @@ function openAlbumDetail(album: Album) {
   flex-direction: column;
   align-items: center;
   gap: 4px;
+}
+
+.player-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #888;
 }
 
 .player-controls {

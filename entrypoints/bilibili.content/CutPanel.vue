@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue';
 import type { BilibiliVideoInfo } from '@/lib/bilibili';
 import { formatTime } from '@/lib/bilibili';
+import { cutAudioFromStream } from '@/lib/audio-cutter';
 import { trackDb, albumDb } from '@/lib/db';
 
 // Props
@@ -21,7 +22,6 @@ const selectedAlbumId = ref<string>('');
 const albums = ref<Array<{ id: string; name: string }>>([]);
 const saveSuccess = ref(false);
 const errorMessage = ref('');
-const serverStatus = ref<'unknown' | 'online' | 'offline'>('unknown');
 
 // 计算属性
 const videoPlayer = computed(() => {
@@ -46,7 +46,6 @@ function togglePanel() {
   isPanelOpen.value = !isPanelOpen.value;
   if (isPanelOpen.value) {
     loadAlbums();
-    checkServer();
     if (endTime.value === 0 && videoDuration.value > 0) {
       endTime.value = Math.min(60, videoDuration.value);
     }
@@ -56,15 +55,6 @@ function togglePanel() {
 async function loadAlbums() {
   const allAlbums = await albumDb.getAll();
   albums.value = allAlbums.map(a => ({ id: a.id, name: a.name }));
-}
-
-async function checkServer() {
-  try {
-    const response = await browser.runtime.sendMessage({ type: 'CHECK_SERVER' });
-    serverStatus.value = response?.ok ? 'online' : 'offline';
-  } catch {
-    serverStatus.value = 'offline';
-  }
 }
 
 function setStartTime() {
@@ -109,56 +99,48 @@ async function saveTrack() {
   }
 
   isLoading.value = true;
-  loadingMessage.value = '正在检查本地服务...';
+  loadingMessage.value = '正在获取音频流...';
   loadingProgress.value = 5;
   errorMessage.value = '';
 
   try {
-    // Step 1: 检查服务器状态
-    const healthCheck = await browser.runtime.sendMessage({ type: 'CHECK_SERVER' });
+    loadingMessage.value = '正在下载并截取音频...';
+    loadingProgress.value = 10;
 
-    if (!healthCheck?.ok) {
-      errorMessage.value = '本地服务未启动。请打开终端运行: cd server && node index.js';
-      return;
-    }
+    const mp3Blob = await cutAudioFromStream(
+      props.videoInfo.bvid,
+      props.videoInfo.cid,
+      startTime.value,
+      endTime.value,
+      (progress) => {
+        loadingProgress.value = 10 + Math.round(progress * 0.8);
+        if (progress < 40) {
+          loadingMessage.value = '正在下载音频...';
+        } else if (progress < 60) {
+          loadingMessage.value = '正在解码...';
+        } else {
+          loadingMessage.value = '正在编码为MP3...';
+        }
+      }
+    );
 
-    // Step 2: 请求服务器下载并截取音频
-    loadingMessage.value = '正在通过本地服务下载并截取音频...';
-    loadingProgress.value = 15;
+    loadingProgress.value = 95;
+    loadingMessage.value = '正在保存...';
 
-    const response = await browser.runtime.sendMessage({
-      type: 'SERVER_DOWNLOAD_AND_CUT',
-      bvid: props.videoInfo.bvid,
+    // 保存元数据（不存储音频 blob）
+    await trackDb.create({
+      name: trackName.value.trim(),
+      albumId: selectedAlbumId.value || undefined,
+      sourceUrl: location.href,
+      sourceBvid: props.videoInfo.bvid,
+      sourceCid: props.videoInfo.cid,
+      sourceTitle: props.videoInfo.title,
+      sourceCover: props.videoInfo.cover,
+      cover: props.videoInfo.cover,
+      duration: selectedDuration.value,
       startTime: startTime.value,
       endTime: endTime.value,
     });
-
-    if (response.error) {
-      errorMessage.value = `下载失败: ${response.error}`;
-      return;
-    }
-
-    loadingProgress.value = 90;
-    loadingMessage.value = '正在保存...';
-
-    // Step 3: 将 MP3 数据保存到 IndexedDB
-    const audioBlob = new Blob([response.data], { type: 'audio/mpeg' });
-
-    await trackDb.create(
-      {
-        name: trackName.value.trim(),
-        albumId: selectedAlbumId.value || undefined,
-        sourceUrl: location.href,
-        sourceBvid: props.videoInfo.bvid,
-        sourceTitle: props.videoInfo.title,
-        sourceCover: props.videoInfo.cover,
-        cover: props.videoInfo.cover,
-        duration: selectedDuration.value,
-        startTime: startTime.value,
-        endTime: endTime.value,
-      },
-      audioBlob
-    );
 
     loadingProgress.value = 100;
     saveSuccess.value = true;
@@ -195,14 +177,6 @@ async function saveTrack() {
     </div>
 
     <div class="bmc-content">
-      <!-- 服务器状态 -->
-      <div class="bmc-server-status" :class="serverStatus">
-        <span class="bmc-status-dot"></span>
-        <span v-if="serverStatus === 'online'">本地服务已连接</span>
-        <span v-else-if="serverStatus === 'offline'">本地服务未连接</span>
-        <span v-else>正在检查服务状态...</span>
-      </div>
-
       <!-- 视频信息 -->
       <div v-if="videoInfo" class="bmc-video-info">
         <img :src="videoInfo.cover" alt="封面" class="bmc-cover" />
@@ -272,7 +246,7 @@ async function saveTrack() {
       <button
         class="bmc-save"
         @click="saveTrack"
-        :disabled="isLoading || !trackName.trim() || serverStatus === 'offline'"
+        :disabled="isLoading || !trackName.trim()"
       >
         保存音轨
       </button>
@@ -366,51 +340,6 @@ async function saveTrack() {
 
 .bmc-content {
   padding: 16px;
-}
-
-/* 服务器状态 */
-.bmc-server-status {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 12px;
-  margin-bottom: 12px;
-  border-radius: 6px;
-  font-size: 12px;
-}
-
-.bmc-server-status.online {
-  background: #f6ffed;
-  color: #52c41a;
-}
-
-.bmc-server-status.offline {
-  background: #fff2f2;
-  color: #ff4d4f;
-}
-
-.bmc-server-status.unknown {
-  background: #f5f5f5;
-  color: #999;
-}
-
-.bmc-status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  display: inline-block;
-}
-
-.bmc-server-status.online .bmc-status-dot {
-  background: #52c41a;
-}
-
-.bmc-server-status.offline .bmc-status-dot {
-  background: #ff4d4f;
-}
-
-.bmc-server-status.unknown .bmc-status-dot {
-  background: #d9d9d9;
 }
 
 .bmc-video-info {

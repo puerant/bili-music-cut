@@ -4,7 +4,7 @@ import Dexie, { type EntityTable } from 'dexie';
 export interface Album {
   id: string;
   name: string;
-  cover?: string; // Base64 或 Blob URL
+  cover?: string;
   description?: string;
   createdAt: number;
   updatedAt: number;
@@ -13,37 +13,35 @@ export interface Album {
 // 音轨表
 export interface Track {
   id: string;
-  albumId?: string; // 所属专辑ID
+  albumId?: string;
   name: string;
-  sourceUrl: string; // 原视频链接
-  sourceBvid: string; // 原视频BV号
-  sourceTitle: string; // 原视频标题
-  sourceCover?: string; // 原视频封面
-  cover?: string; // 自定义封面
-  audioData?: Blob; // 音频数据 (存储在单独表)
-  duration: number; // 时长(秒)
-  startTime: number; // 截取开始时间(秒)
-  endTime: number; // 截取结束时间(秒)
+  sourceUrl: string;
+  sourceBvid: string;
+  sourceCid: number;
+  sourceTitle: string;
+  sourceCover?: string;
+  cover?: string;
+  duration: number;
+  startTime: number;
+  endTime: number;
   createdAt: number;
-}
-
-// 音频数据表 (分离存储大文件)
-export interface AudioData {
-  id: string; // 与Track.id相同
-  data: Blob;
 }
 
 // 数据库定义
 const db = new Dexie('BiliMusicCutDB') as Dexie & {
   albums: EntityTable<Album, 'id'>;
   tracks: EntityTable<Track, 'id'>;
-  audioData: EntityTable<AudioData, 'id'>;
 };
 
 db.version(1).stores({
   albums: 'id, name, createdAt, updatedAt',
   tracks: 'id, albumId, name, sourceBvid, createdAt',
   audioData: 'id',
+});
+
+db.version(2).stores({
+  albums: 'id, name, createdAt, updatedAt',
+  tracks: 'id, albumId, name, sourceBvid, createdAt',
 });
 
 // 生成唯一ID
@@ -78,7 +76,6 @@ export const albumDb = {
   },
 
   async delete(id: string): Promise<void> {
-    // 删除专辑下所有音轨
     const tracks = await db.tracks.where('albumId').equals(id).toArray();
     for (const track of tracks) {
       await trackDb.delete(track.id);
@@ -90,8 +87,7 @@ export const albumDb = {
 // 音轨操作
 export const trackDb = {
   async create(
-    track: Omit<Track, 'id' | 'createdAt'>,
-    audioBlob: Blob
+    track: Omit<Track, 'id' | 'createdAt'>
   ): Promise<Track> {
     const id = generateId();
     const newTrack: Track = {
@@ -101,8 +97,6 @@ export const trackDb = {
     };
 
     await db.tracks.add(newTrack);
-    await db.audioData.add({ id, data: audioBlob });
-
     return newTrack;
   },
 
@@ -118,30 +112,12 @@ export const trackDb = {
     return db.tracks.get(id);
   },
 
-  async getAudioData(id: string): Promise<Blob | undefined> {
-    const audio = await db.audioData.get(id);
-    return audio?.data;
-  },
-
   async update(id: string, data: Partial<Omit<Track, 'id' | 'createdAt'>>): Promise<void> {
     await db.tracks.update(id, data);
   },
 
   async delete(id: string): Promise<void> {
     await db.tracks.delete(id);
-    await db.audioData.delete(id);
-  },
-
-  async getAudioUrl(id: string): Promise<string | null> {
-    const audio = await db.audioData.get(id);
-    if (audio) {
-      return URL.createObjectURL(audio.data);
-    }
-    return null;
-  },
-
-  async revokeAudioUrl(url: string): Promise<void> {
-    URL.revokeObjectURL(url);
   },
 };
 
