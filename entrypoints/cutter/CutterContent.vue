@@ -83,6 +83,13 @@ const editingPlaylist = ref<Playlist | null>(null);
 const newPlaylistName = ref('');
 const editPlaylistName = ref('');
 
+// ========== 编辑音轨 ==========
+const showEditTrackModal = ref(false);
+const editingTrack = ref<FlatTrack | null>(null);
+const editTrackName = ref('');
+const editTrackStartTime = ref(0);
+const editTrackEndTime = ref(30);
+
 // ========== 当前歌单信息 ==========
 const currentPlaylist = computed(() => {
   if (!activePlaylistId.value) return null;
@@ -161,7 +168,7 @@ const songColumns = computed<DataTableColumns<FlatTrack>>(() => [
   {
     title: '操作',
     key: 'actions',
-    width: 130,
+    width: 160,
     align: 'center',
     render(row) {
       const isCurrentPlaying = store.currentTrack?.id === row.id && isPlaying.value;
@@ -194,6 +201,19 @@ const songColumns = computed<DataTableColumns<FlatTrack>>(() => [
             () => h(NIcon, { size: 16 }, () => h(DownloadOutlined))
           ),
           default: () => '下载',
+        }),
+        h(NTooltip, {}, {
+          trigger: () => h(
+            NButton,
+            {
+              size: 'tiny',
+              quaternary: true,
+              circle: true,
+              onClick: (e: Event) => { e.stopPropagation(); openEditTrack(row); },
+            },
+            () => h(NIcon, { size: 16 }, () => h(EditOutlined))
+          ),
+          default: () => '编辑',
         }),
         h(NPopconfirm, { onPositiveClick: () => handleDeleteTrack(row, row.playlistId ?? activePlaylistId.value!) }, {
           trigger: () => h(
@@ -465,6 +485,36 @@ function handleDeleteTrack(track: Track, playlistId: string) {
     isPlaying.value = false;
   }
   message.success('音轨已删除');
+}
+
+// ========== 编辑音轨 ==========
+function openEditTrack(track: FlatTrack) {
+  editingTrack.value = track;
+  editTrackName.value = track.name;
+  editTrackStartTime.value = track.startTime;
+  editTrackEndTime.value = track.endTime;
+  showEditTrackModal.value = true;
+}
+
+function handleSaveEditTrack() {
+  if (!editingTrack.value) return;
+  if (!editTrackName.value.trim()) {
+    message.warning('请输入歌曲名');
+    return;
+  }
+  if (editTrackEndTime.value <= editTrackStartTime.value) {
+    message.warning('结束时间需大于起始时间');
+    return;
+  }
+  const playlistId = editingTrack.value.playlistId ?? activePlaylistId.value!;
+  store.updateTrack(playlistId, editingTrack.value.id, {
+    name: editTrackName.value.trim(),
+    startTime: editTrackStartTime.value,
+    endTime: editTrackEndTime.value,
+    duration: editTrackEndTime.value - editTrackStartTime.value,
+  });
+  showEditTrackModal.value = false;
+  message.success('已保存修改');
 }
 
 // ========== 歌单操作 ==========
@@ -802,6 +852,49 @@ function selectPlaylist(playlist: Playlist) {
     <!-- ===== 弹窗：编辑歌单 ===== -->
     <n-modal v-model:show="showEditPlaylist" preset="dialog" title="编辑歌单" positive-text="保存" negative-text="取消" @positive-click="handleEditPlaylist">
       <n-input v-model:value="editPlaylistName" placeholder="歌单名称" />
+    </n-modal>
+
+    <!-- ===== 弹窗：编辑音轨 ===== -->
+    <n-modal v-model:show="showEditTrackModal" preset="card" title="编辑音轨" style="max-width: 440px;" :mask-closable="false">
+      <template v-if="editingTrack">
+        <div style="margin-bottom: 12px;">
+          <div style="font-size: 13px; margin-bottom: 6px; color: var(--text-secondary);">歌曲名</div>
+          <n-input v-model:value="editTrackName" placeholder="歌曲名称" />
+        </div>
+        <div style="margin-bottom: 12px;">
+          <div style="font-size: 13px; margin-bottom: 6px; color: var(--text-secondary);">
+            起始时间: {{ formatTime(editTrackStartTime) }}
+          </div>
+          <n-slider
+            v-model:value="editTrackStartTime"
+            :min="0"
+            :max="editTrackEndTime - 1"
+            :step="1"
+            :format-tooltip="(v: number) => formatTime(v)"
+          />
+        </div>
+        <div style="margin-bottom: 12px;">
+          <div style="font-size: 13px; margin-bottom: 6px; color: var(--text-secondary);">
+            结束时间: {{ formatTime(editTrackEndTime) }}
+          </div>
+          <n-slider
+            v-model:value="editTrackEndTime"
+            :min="editTrackStartTime + 1"
+            :max="editTrackStartTime + 600"
+            :step="1"
+            :format-tooltip="(v: number) => formatTime(v)"
+          />
+        </div>
+        <div style="text-align: center; font-size: 13px; color: #999; margin-bottom: 12px;">
+          截取: <span style="color: #63e2b7;">{{ formatTime(editTrackStartTime) }}</span>
+          →
+          <span style="color: #63e2b7;">{{ formatTime(editTrackEndTime) }}</span>
+          （共 <span style="color: #63e2b7;">{{ formatTime(Math.max(0, editTrackEndTime - editTrackStartTime)) }}</span>）
+        </div>
+        <n-button type="primary" block size="large" @click="handleSaveEditTrack">
+          保存修改
+        </n-button>
+      </template>
     </n-modal>
   </div>
 </template>
