@@ -12,7 +12,7 @@ import {
   type Playlist,
   type Track,
 } from '@/lib/storage';
-import { fetchPlayUrl, getVideoInfo } from '@/lib/bilibili';
+import { fetchPlayUrl, getVideoInfo, clearStreamUrlCache } from '@/lib/bilibili';
 
 export const useMusicStore = defineStore('music', () => {
   const playlists = ref<Playlist[]>([]);
@@ -76,8 +76,14 @@ export const useMusicStore = defineStore('music', () => {
   }
 
   async function deleteTrack(playlistId: string, trackId: string) {
-    await removeTrackFromStorage(playlistId, trackId);
+    // 先找到 track 以清理缓存
     const playlist = playlists.value.find((p) => p.id === playlistId);
+    const track = playlist?.tracks.find((t) => t.id === trackId);
+    if (track) {
+      clearStreamUrlCache(track.bvid, track.cid);
+    }
+
+    await removeTrackFromStorage(playlistId, trackId);
     if (playlist) {
       playlist.tracks = playlist.tracks.filter((t) => t.id !== trackId);
       playlist.updatedAt = Date.now();

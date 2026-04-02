@@ -240,6 +240,10 @@ export async function fetchAudioForCutting(
 // 音频流URL缓存：key = `${bvid}_${cid}`
 const streamUrlCache = new Map<string, string>();
 
+export function clearStreamUrlCache(bvid: string, cid: number) {
+  streamUrlCache.delete(`${bvid}_${cid}`);
+}
+
 /**
  * 延迟获取音频流播放 URL（azusa-player 模式）
  * 播放时才调用 API 获取 CDN 地址，内存缓存避免重复请求

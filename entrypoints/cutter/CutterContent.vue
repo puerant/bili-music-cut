@@ -195,7 +195,7 @@ const songColumns = computed<DataTableColumns<FlatTrack>>(() => [
           ),
           default: () => '下载',
         }),
-        h(NPopconfirm, { onPositiveClick: () => handleDeleteTrack(row, row.playlistId) }, {
+        h(NPopconfirm, { onPositiveClick: () => handleDeleteTrack(row, row.playlistId ?? activePlaylistId.value!) }, {
           trigger: () => h(
             NButton,
             {
