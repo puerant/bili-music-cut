@@ -142,11 +142,11 @@ const songColumns = computed<DataTableColumns<FlatTrack>>(() => [
   },
   {
     title: 'UP主',
-    key: 'sourceTitle',
+    key: 'ownerName',
     width: 150,
     ellipsis: { tooltip: true },
     render(row) {
-      return row.sourceTitle || '-';
+      return row.ownerName || '-';
     },
   },
   {
@@ -405,6 +405,7 @@ async function addTrackToPlaylist() {
       sourceTitle: searchResult.value.title,
       sourceCover: searchResult.value.cover,
       cover: searchResult.value.cover,
+      ownerName: searchResult.value.owner.name,
       duration,
       startTime: downloadStartTime.value,
       endTime: downloadEndTime.value,

@@ -9,6 +9,7 @@ export interface Track {
   endTime: number;
   duration: number;
   sourceTitle: string;
+  upName?: string;
   sourceCover?: string;
   cover?: string;
   createdAt: number;
