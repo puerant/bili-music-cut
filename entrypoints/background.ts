@@ -15,6 +15,12 @@ type Message = FetchStreamUrlMessage | FetchVideoInfoMessage;
 export default defineBackground(() => {
   console.log('[B站音乐截取] 后台服务已启动', { id: browser.runtime.id });
 
+  // 点击插件图标直接打开 cutter 页面
+  browser.action.onClicked.addListener(() => {
+    const url = browser.runtime.getURL('/cutter.html');
+    browser.tabs.create({ url });
+  });
+
   browser.runtime.onMessage.addListener(
     (message: Message, _sender, sendResponse) => {
       if (message.type === 'FETCH_STREAM_URL') {

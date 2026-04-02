@@ -7,6 +7,7 @@ export default defineConfig({
     name: 'B站音乐截取',
     description: '从B站视频截取音频片段，创建个人音乐收藏',
     version: '0.2.0',
+    action: {},
     permissions: [
       'storage',
       'downloads',
