@@ -1,102 +1,129 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import { albumDb, trackDb, type Album, type Track } from '@/lib/db';
-import { getAudioStreamDirectUrl, getVideoInfo } from '@/lib/bilibili';
+import {
+  getPlaylists as loadPlaylistsFromStorage,
+  createPlaylist as createPlaylistInStorage,
+  savePlaylist,
+  deletePlaylist as deletePlaylistFromStorage,
+  addTrackToPlaylist as addTrackToStorage,
+  removeTrackFromPlaylist as removeTrackFromStorage,
+  updateTrackInPlaylist as updateTrackInStorage,
+  generateId,
+  type Playlist,
+  type Track,
+} from '@/lib/storage';
+import { fetchPlayUrl, getVideoInfo } from '@/lib/bilibili';
 import { cutAudioFromStream, downloadAudio } from '@/lib/audio-cutter';
 
 export const useMusicStore = defineStore('music', () => {
   // 状态
-  const albums = ref<Album[]>([]);
-  const tracks = ref<Track[]>([]);
+  const playlists = ref<Playlist[]>([]);
   const currentTrack = ref<Track | null>(null);
-  const currentAlbum = ref<Album | null>(null);
+  const currentPlaylist = ref<Playlist | null>(null);
   const isLoading = ref(false);
   const audioUrl = ref<string | null>(null);
   const isStreamLoading = ref(false);
 
-  // 计算属性
-  const tracksWithoutAlbum = computed(() => {
-    return tracks.value.filter((t) => !t.albumId);
+  // 计算属性：所有 tracks 扁平化
+  const allTracks = computed(() => {
+    return playlists.value.flatMap((p) =>
+      p.tracks.map((t) => ({ ...t, playlistId: p.id, playlistTitle: p.title }))
+    );
   });
 
-  // 获取所有专辑
-  async function loadAlbums() {
+  const hasPlaylists = computed(() => playlists.value.length > 0);
+
+  // 加载所有 playlists
+  async function loadPlaylists() {
     isLoading.value = true;
     try {
-      albums.value = await albumDb.getAll();
+      playlists.value = await loadPlaylistsFromStorage();
     } finally {
       isLoading.value = false;
     }
   }
 
-  // 获取所有音轨
-  async function loadTracks() {
-    isLoading.value = true;
-    try {
-      tracks.value = await trackDb.getAll();
-    } finally {
-      isLoading.value = false;
+  // 创建播放列表
+  async function createPlaylist(title: string, cover?: string) {
+    const playlist = await createPlaylistInStorage(title, cover);
+    playlists.value.unshift(playlist);
+    return playlist;
+  }
+
+  // 更新播放列表信息
+  async function updatePlaylist(
+    id: string,
+    data: Partial<Pick<Playlist, 'title' | 'cover'>>
+  ) {
+    const playlist = playlists.value.find((p) => p.id === id);
+    if (!playlist) return;
+    Object.assign(playlist, data, { updatedAt: Date.now() });
+    await savePlaylist(playlist);
+  }
+
+  // 删除播放列表
+  async function deletePlaylist(id: string) {
+    await deletePlaylistFromStorage(id);
+    playlists.value = playlists.value.filter((p) => p.id !== id);
+  }
+
+  // 添加音轨到播放列表
+  async function addTrack(playlistId: string, track: Omit<Track, 'id' | 'createdAt'>) {
+    const newTrack: Track = {
+      ...track,
+      id: generateId(),
+      createdAt: Date.now(),
+    };
+    await addTrackToStorage(playlistId, newTrack);
+    // 同步本地状态
+    const playlist = playlists.value.find((p) => p.id === playlistId);
+    if (playlist) {
+      playlist.tracks.push(newTrack);
+      playlist.updatedAt = Date.now();
     }
-  }
-
-  // 创建专辑
-  async function createAlbum(name: string, description?: string, cover?: string) {
-    const album = await albumDb.create({ name, description, cover });
-    albums.value.unshift(album);
-    return album;
-  }
-
-  // 更新专辑
-  async function updateAlbum(id: string, data: Partial<Omit<Album, 'id' | 'createdAt'>>) {
-    await albumDb.update(id, data);
-    const index = albums.value.findIndex((a) => a.id === id);
-    if (index !== -1) {
-      albums.value[index] = { ...albums.value[index], ...data, updatedAt: Date.now() };
-    }
-  }
-
-  // 删除专辑
-  async function deleteAlbum(id: string) {
-    await albumDb.delete(id);
-    albums.value = albums.value.filter((a) => a.id !== id);
-    tracks.value = tracks.value.filter((t) => t.albumId !== id);
+    return newTrack;
   }
 
   // 删除音轨
-  async function deleteTrack(id: string) {
-    await trackDb.delete(id);
-    tracks.value = tracks.value.filter((t) => t.id !== id);
-    if (currentTrack.value?.id === id) {
+  async function deleteTrack(playlistId: string, trackId: string) {
+    await removeTrackFromStorage(playlistId, trackId);
+    const playlist = playlists.value.find((p) => p.id === playlistId);
+    if (playlist) {
+      playlist.tracks = playlist.tracks.filter((t) => t.id !== trackId);
+      playlist.updatedAt = Date.now();
+    }
+    if (currentTrack.value?.id === trackId) {
       currentTrack.value = null;
       audioUrl.value = null;
     }
   }
 
   // 更新音轨
-  async function updateTrack(id: string, data: Partial<Omit<Track, 'id' | 'createdAt'>>) {
-    await trackDb.update(id, data);
-    const index = tracks.value.findIndex((t) => t.id === id);
-    if (index !== -1) {
-      tracks.value[index] = { ...tracks.value[index], ...data };
+  async function updateTrack(
+    playlistId: string,
+    trackId: string,
+    data: Partial<Omit<Track, 'id' | 'createdAt'>>
+  ) {
+    await updateTrackInStorage(playlistId, trackId, data);
+    const playlist = playlists.value.find((p) => p.id === playlistId);
+    if (playlist) {
+      const track = playlist.tracks.find((t) => t.id === trackId);
+      if (track) Object.assign(track, data);
+      playlist.updatedAt = Date.now();
     }
   }
 
-  // 播放音轨 - 动态获取流URL
+  // 播放音轨 — 延迟获取 CDN URL
   async function playTrack(track: Track) {
     audioUrl.value = null;
     isStreamLoading.value = true;
 
     try {
-      let cid = track.sourceCid;
+      let cid = track.cid;
       // 旧数据可能没有 cid，重新获取
       if (!cid) {
-        const videoInfo = await getVideoInfo(track.sourceBvid);
-        if (videoInfo) {
-          cid = videoInfo.cid;
-          await trackDb.update(track.id, { sourceCid: cid } as any);
-          const idx = tracks.value.findIndex(t => t.id === track.id);
-          if (idx !== -1) tracks.value[idx].sourceCid = cid;
-        }
+        const videoInfo = await getVideoInfo(track.bvid);
+        if (videoInfo) cid = videoInfo.cid;
       }
 
       if (!cid) {
@@ -105,7 +132,7 @@ export const useMusicStore = defineStore('music', () => {
         return;
       }
 
-      const streamUrl = await getAudioStreamDirectUrl(track.sourceBvid, cid);
+      const streamUrl = await fetchPlayUrl(track.bvid, cid);
       if (streamUrl) {
         currentTrack.value = track;
         audioUrl.value = streamUrl;
@@ -123,22 +150,17 @@ export const useMusicStore = defineStore('music', () => {
     currentTrack.value = null;
   }
 
-  // 获取专辑的音轨
-  function getAlbumTracks(albumId: string): Track[] {
-    return tracks.value.filter((t) => t.albumId === albumId);
-  }
-
-  // 下载音轨 - 动态获取 + 截取 + 编码为 MP3
+  // 下载音轨 — 重新下载+截取+编码为 MP3
   async function downloadTrack(track: Track): Promise<void> {
-    let cid = track.sourceCid;
+    let cid = track.cid;
     if (!cid) {
-      const videoInfo = await getVideoInfo(track.sourceBvid);
+      const videoInfo = await getVideoInfo(track.bvid);
       cid = videoInfo?.cid ?? 0;
     }
     if (!cid) throw new Error('无法获取视频信息');
 
     const mp3Blob = await cutAudioFromStream(
-      track.sourceBvid,
+      track.bvid,
       cid,
       track.startTime,
       track.endTime
@@ -146,31 +168,37 @@ export const useMusicStore = defineStore('music', () => {
     downloadAudio(mp3Blob, `${track.name}.mp3`);
   }
 
+  // 获取播放列表的音轨
+  function getPlaylistTracks(playlistId: string): Track[] {
+    const playlist = playlists.value.find((p) => p.id === playlistId);
+    return playlist?.tracks ?? [];
+  }
+
   // 初始化
   async function init() {
-    await Promise.all([loadAlbums(), loadTracks()]);
+    await loadPlaylists();
   }
 
   return {
-    albums,
-    tracks,
+    playlists,
     currentTrack,
-    currentAlbum,
+    currentPlaylist,
     isLoading,
     audioUrl,
     isStreamLoading,
-    tracksWithoutAlbum,
-    loadAlbums,
-    loadTracks,
-    createAlbum,
-    updateAlbum,
-    deleteAlbum,
+    allTracks,
+    hasPlaylists,
+    loadPlaylists,
+    createPlaylist,
+    updatePlaylist,
+    deletePlaylist,
+    addTrack,
     deleteTrack,
     updateTrack,
     playTrack,
     stopTrack,
-    getAlbumTracks,
     downloadTrack,
+    getPlaylistTracks,
     init,
   };
 });

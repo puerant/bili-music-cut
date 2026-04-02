@@ -237,6 +237,18 @@ export async function fetchAudioForCutting(
   return downloadAudioStream(streamInfo.baseUrl, onProgress);
 }
 
+/**
+ * 延迟获取音频流播放 URL（azusa-player 模式）
+ * 播放时才调用 API 获取 CDN 地址
+ */
+export async function fetchPlayUrl(bvid: string, cid: number): Promise<string | null> {
+  if (!cid) {
+    cid = (await getCid(bvid)) ?? 0;
+  }
+  if (!cid) return null;
+  return getAudioStreamDirectUrl(bvid, cid);
+}
+
 // 格式化时间 (秒 -> mm:ss)
 export function formatTime(seconds: number): string {
   const mins = Math.floor(seconds / 60);
