@@ -12,7 +12,6 @@ export default defineConfig({
       'storage',
       'downloads',
       'activeTab',
-      'scripting',
       'declarativeNetRequest',
     ],
     host_permissions: [
