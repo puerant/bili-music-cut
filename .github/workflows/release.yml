@@ -4,9 +4,19 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag, e.g. v1.1.0'
+        required: true
+        type: string
+
 jobs:
-  submit:
+  release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
     steps:
       - uses: actions/checkout@v5
 
@@ -24,6 +34,14 @@ jobs:
         run: |
           pnpm zip
           pnpm zip:firefox
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          name: ${{ inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          files: .output/*.zip
 
       - name: Submit to stores
         run: |
